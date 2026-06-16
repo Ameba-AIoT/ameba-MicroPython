@@ -1,0 +1,6 @@
+[submodule "micropython"]
+	path = micropython
+	url = https://github.com/micropython/micropython.git
+[submodule "ameba-rtos"]
+	path = ameba-rtos
+	url = https://github.com/Ameba-AIoT/ameba-rtos.git
