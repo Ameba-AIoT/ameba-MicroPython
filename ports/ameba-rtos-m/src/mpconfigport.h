@@ -146,8 +146,13 @@ typedef long mp_off_t;
 #include <alloca.h>
 
 // Define the port's name and hardware.
+// These are overridden per-board by boards/<BOARD>/mpconfigboard.h.
+#ifndef MICROPY_HW_BOARD_NAME
 #define MICROPY_HW_BOARD_NAME "ameba-board"
+#endif
+#ifndef MICROPY_HW_MCU_NAME
 #define MICROPY_HW_MCU_NAME   "ameba-cpu"
+#endif
 
 #define MP_STATE_PORT MP_STATE_VM
 
