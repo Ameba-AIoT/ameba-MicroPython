@@ -120,6 +120,8 @@
 #define MICROPY_PY_MACHINE_ADC               (1)
 #define MICROPY_PY_MACHINE_ADC_INCLUDEFILE   "src/machine_adc.c"
 #define MICROPY_PY_MACHINE_ADC_DEINIT        (1)
+#define MICROPY_PY_MACHINE_PWM               (1)
+#define MICROPY_PY_MACHINE_PWM_INCLUDEFILE   "src/machine_pwm.c"
 
 
 #define MICROPY_PY_NETWORK (1)

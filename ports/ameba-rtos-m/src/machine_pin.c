@@ -155,6 +155,12 @@ static machine_pin_obj_t machine_pin_obj_table[57] = {
     AMEBA_PIN_ENTRY(PB_24),
 };
 
+// HAL: extract PinName from a machine.Pin object.
+mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj) {
+    machine_pin_obj_t *pin = (machine_pin_obj_t *)pin_obj;
+    return pin->id;
+}
+
 // ---------------------------------------------------------------------------
 // Board pins dict (empty in skeleton; Task 3 will populate)
 // ---------------------------------------------------------------------------
