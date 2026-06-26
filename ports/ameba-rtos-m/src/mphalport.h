@@ -28,6 +28,7 @@
 #define MICROPY_INCLUDED_AMEBA_MPHALPORT_H
 
 #include <stdint.h>
+#include "PinNames.h"
 
 // Save PRIMASK and disable all interrupts; return saved state for restoration.
 static inline uint32_t mp_hal_begin_atomic_section(void) {
@@ -43,6 +44,15 @@ static inline void mp_hal_end_atomic_section(uint32_t state) {
 
 #define MICROPY_BEGIN_ATOMIC_SECTION()     mp_hal_begin_atomic_section()
 #define MICROPY_END_ATOMIC_SECTION(state)  mp_hal_end_atomic_section(state)
+
+// Pin HAL type.  Must be a #define (not typedef) so that py/mphal.h sees it
+// is already defined and skips its fallback macro, which would override our
+// mp_hal_get_pin_obj function declaration below.
+#define mp_hal_pin_obj_t PinName
+
+// Used by machine.PWM and other pin-based modules to extract the PinName
+// from a machine.Pin object.  Implemented in machine_pin.c.
+mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj);
 
 mp_uint_t mp_hal_ticks_us(void);
 void mp_hal_set_interrupt_char(int c);

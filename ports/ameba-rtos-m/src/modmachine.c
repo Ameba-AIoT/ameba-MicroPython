@@ -52,6 +52,7 @@ typedef enum {
     { MP_ROM_QSTR(MP_QSTR_WDT_RESET),       MP_ROM_INT(MP_WDT_RESET) }, \
     { MP_ROM_QSTR(MP_QSTR_DEEPSLEEP_RESET), MP_ROM_INT(MP_DEEPSLEEP_RESET) }, \
     { MP_ROM_QSTR(MP_QSTR_SOFT_RESET),      MP_ROM_INT(MP_SOFT_RESET) }, \
+    { MP_ROM_QSTR(MP_QSTR_RTC),             MP_ROM_PTR(&machine_rtc_type) }, \
 
 static mp_obj_t mp_machine_unique_id(void) {
     // EFUSE_GetUUID returns a 4-byte chip UUID via sys_api.h -> ... -> ameba_chipinfo.h.

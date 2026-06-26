@@ -88,6 +88,11 @@ set(MICROPY_SOURCE_QSTR
     ${MICROPY_PORT_DIR}/src/network_common.c
     ${MICROPY_PORT_DIR}/src/machine_pin.c
     ${MICROPY_PORT_DIR}/src/machine_timer.c
+    ${MICROPY_PORT_DIR}/src/machine_uart.c
+    ${MICROPY_PORT_DIR}/src/machine_i2c.c
+    ${MICROPY_PORT_DIR}/src/machine_adc.c
+    ${MICROPY_PORT_DIR}/src/machine_pwm.c
+    ${MICROPY_PORT_DIR}/src/machine_rtc.c
 )
 
 
@@ -141,6 +146,8 @@ ameba_list_append(private_sources
     network_common.c
     machine_pin.c
     machine_timer.c
+    machine_i2c.c
+    machine_rtc.c
     ${MICROPY_SOURCE_SHARED}
     ${MICROPY_SOURCE_EXTMOD}
     ${MICROPY_SOURCE_LIB}
