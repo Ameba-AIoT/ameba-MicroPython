@@ -130,6 +130,8 @@
 #define MICROPY_PY_MACHINE_PWM               (1)
 #define MICROPY_PY_MACHINE_PWM_INCLUDEFILE   "src/machine_pwm.c"
 #define MICROPY_PY_MACHINE_RTC               (1)
+#define MICROPY_PY_MACHINE_WDT               (1)
+#define MICROPY_PY_MACHINE_WDT_INCLUDEFILE   "src/machine_wdt.c"
 
 
 #define MICROPY_PY_NETWORK (1)

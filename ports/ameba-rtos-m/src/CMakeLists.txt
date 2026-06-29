@@ -93,6 +93,7 @@ set(MICROPY_SOURCE_QSTR
     ${MICROPY_PORT_DIR}/src/machine_adc.c
     ${MICROPY_PORT_DIR}/src/machine_pwm.c
     ${MICROPY_PORT_DIR}/src/machine_rtc.c
+${MICROPY_PORT_DIR}/src/machine_wdt.c
 )
 
 
