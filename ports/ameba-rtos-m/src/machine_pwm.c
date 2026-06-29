@@ -16,7 +16,18 @@
 // Declared in machine_pin.c, used to extract PinName from a Pin object.
 extern mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj);
 
+// Defined (non-static) in the SDK's pwmout_api.c.  TIMER8 feeds the PWM
+// block from a 40 MHz clock through this shared prescaler.  The SDK's
+// pwmout_period_us() bumps this global when a long period overflows the
+// 16-bit ARR, but it (a) never writes the hardware PSC register and
+// (b) never resets the global back to 0 for short periods.  That leaves the
+// global and the hardware permanently out of sync after the first low-freq
+// call, corrupting every subsequent frequency.  We own prescaler in
+// mp_machine_pwm_freq_set() instead and keep both in lock-step.
+extern u8 prescaler;
+
 #define PWM_CHANNEL_MAX    (8)
+#define PWM_TIMER_CLK_MHZ  (40)
 
 typedef struct _machine_pwm_obj_t {
     mp_obj_base_t base;
@@ -40,14 +51,16 @@ static int8_t machine_pwm_alloc_channel(void) {
     return -1;   // all channels in use
 }
 
-// Check whether a given pin is already claimed by an active PWM channel.
-static bool machine_pwm_pin_is_claimed(PinName pin) {
+// Return the active channel already bound to this pin, or NULL.  Used to make
+// a second PWM(pin) on the same pin reuse (reconfigure) the existing channel
+// instead of allocating a new one — matching esp32's find_channel semantics.
+static machine_pwm_obj_t *machine_pwm_find_by_pin(PinName pin) {
     for (int i = 0; i < PWM_CHANNEL_MAX; i++) {
         if (machine_pwm_obj[i].active && machine_pwm_obj[i].pin == pin) {
-            return true;
+            return &machine_pwm_obj[i];
         }
     }
-    return false;
+    return NULL;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,26 +120,27 @@ static mp_obj_t mp_machine_pwm_make_new(const mp_obj_type_t *type,
         mp_raise_ValueError(MP_ERROR_TEXT("pin doesn't support PWM"));
     }
 
-    // Reject if the same pin is already claimed by another channel.
-    if (machine_pwm_pin_is_claimed(pin)) {
-        mp_raise_ValueError(MP_ERROR_TEXT("PWM pin already in use"));
+    // If this pin already drives an active channel, reuse it (esp32 semantics):
+    // a second PWM(pin) reconfigures the existing channel via init_helper below
+    // rather than raising or consuming a second channel slot.
+    machine_pwm_obj_t *self = machine_pwm_find_by_pin(pin);
+    if (self == NULL) {
+        // Allocate a fresh channel for this pin.
+        int channel = machine_pwm_alloc_channel();
+        if (channel < 0) {
+            mp_raise_ValueError(MP_ERROR_TEXT("all PWM channels in use"));
+        }
+
+        self = &machine_pwm_obj[channel];
+        self->base.type = type;
+        self->pwm_idx = (uint8_t)channel;
+        self->pin = pin;
+
+        // Init PWM: pwm_idx MUST be set before pwmout_init.
+        self->pwm.pwm_idx = self->pwm_idx;
+        pwmout_init(&self->pwm, (PinName)self->pin);
+        self->active = true;
     }
-
-    // Find a free PWM channel.
-    int channel = machine_pwm_alloc_channel();
-    if (channel < 0) {
-        mp_raise_ValueError(MP_ERROR_TEXT("all PWM channels in use"));
-    }
-
-    machine_pwm_obj_t *self = &machine_pwm_obj[channel];
-    self->base.type = type;
-    self->pwm_idx = (uint8_t)channel;
-    self->pin = pin;
-
-    // Init PWM: pwm_idx MUST be set before pwmout_init.
-    self->pwm.pwm_idx = self->pwm_idx;
-    pwmout_init(&self->pwm, (PinName)self->pin);
-    self->active = true;
 
     // Process remaining kwargs (freq, duty_u16, duty_ns, invert).
     mp_map_t kw_args;
@@ -163,6 +177,34 @@ static void mp_machine_pwm_freq_set(machine_pwm_obj_t *self, mp_int_t freq) {
     }
 
     int new_period_us = 1000000 / freq;
+
+    // Compute and apply the prescaler ourselves *before* pwmout_period_us().
+    // TIMER8 counts at 40 MHz into a 16-bit ARR; a period needing more than
+    // 0x10000 ticks must be prescaled by the SDK's u8 `prescaler` global
+    // (formula: period_us * 40 / 0x10000).  The SDK's pwmout_period_us() bumps
+    // that global for long periods but never (a) writes it to the hardware PSC
+    // register nor (b) resets it to 0 for short periods, so after the first
+    // low-frequency call it stays stale and every later frequency is wrong.
+    //
+    // We instead own the prescaler here: derive it, clamp to the u8 hardware
+    // limit, and push the SAME value into both the global and the hardware PSC
+    // (immediate reload).  Keeping them in lock-step means pwmout_period_us()'s
+    // own `if (tmp > 0x10000)` branch never fires (a no-op), so the ARR it
+    // programs always matches the live prescaler.
+    //
+    // The u8 prescaler caps the longest period at (0x10000 * 256) / 40 MHz
+    // ≈ 419 ms, i.e. a hardware floor of ~2.39 Hz.  Lower requests are clamped
+    // to that floor rather than silently wrapping the u8 and corrupting output.
+    uint32_t ticks = (uint32_t)new_period_us * PWM_TIMER_CLK_MHZ;
+    uint32_t new_prescaler = (ticks > 0x10000) ? (ticks / 0x10000) : 0;
+    if (new_prescaler > 0xFF) {
+        new_prescaler = 0xFF;
+        new_period_us = (int)((0x10000UL * (0xFF + 1)) / PWM_TIMER_CLK_MHZ);
+    }
+    if (new_prescaler != (uint32_t)prescaler) {
+        prescaler = (u8)new_prescaler;
+        RTIM_PrescalerConfig(TIM8, new_prescaler, TIM_PSCReloadMode_Immediate);
+    }
 
     // All 8 PWM channels share TIMER8 (same period).  Changing the period
     // affects every active channel's duty cycle because the raw HW compare
