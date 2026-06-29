@@ -110,6 +110,13 @@ soft_reset_exit:
     machine_i2c_deinit_all();
     #endif
 
+    #if MICROPY_PY_MACHINE_SPI
+    // Free SPI peripherals so a re-init after soft reset starts clean (the static
+    // SPI objects survive soft reset with the SDK peripheral still enabled).
+    extern void machine_spi_deinit_all(void);
+    machine_spi_deinit_all();
+    #endif
+
     #if MICROPY_PY_MACHINE_PWM
     // Disable PWM outputs and release pinmux so a re-init after soft reset
     // starts clean (the static PWM objects survive soft reset).

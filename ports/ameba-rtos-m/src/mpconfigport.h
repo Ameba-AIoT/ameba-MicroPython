@@ -124,6 +124,7 @@
 #define MICROPY_PY_MACHINE_UART_INCLUDEFILE  "src/machine_uart.c"
 #define MICROPY_PY_MACHINE_UART_IRQ          (0)
 #define MICROPY_PY_MACHINE_I2C               (1)
+#define MICROPY_PY_MACHINE_SPI               (1)
 #define MICROPY_PY_MACHINE_ADC               (1)
 #define MICROPY_PY_MACHINE_ADC_INCLUDEFILE   "src/machine_adc.c"
 #define MICROPY_PY_MACHINE_ADC_DEINIT        (1)
