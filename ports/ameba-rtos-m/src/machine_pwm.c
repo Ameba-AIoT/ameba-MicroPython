@@ -13,9 +13,6 @@
 #include "pwmout_ex_api.h"   // pwmout_start, pwmout_stop
 #include "ameba_soc.h"       // Pinmux_Config, PINMUX_FUNCTION_GPIO
 
-// Declared in machine_pin.c, used to extract PinName from a Pin object.
-extern mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj);
-
 // Defined (non-static) in the SDK's pwmout_api.c.  TIMER8 feeds the PWM
 // block from a 40 MHz clock through this shared prescaler.  The SDK's
 // pwmout_period_us() bumps this global when a long period overflows the
@@ -112,8 +109,11 @@ static mp_obj_t mp_machine_pwm_make_new(const mp_obj_type_t *type,
 
     mp_arg_check_num(n_args, n_kw, 1, MP_OBJ_FUN_ARGS_MAX, true);
 
-    // Extract PinName from the Pin object.
-    PinName pin = mp_hal_get_pin_obj(args[0]);
+    // Resolve the Pin object / pin name to a PinName.  mp_hal_pin_resolve
+    // validates the type via machine_pin_find and raises a clean ValueError
+    // on a non-pin argument, instead of blindly dereferencing it as a pointer
+    // (undefined behaviour that can bind / drive a garbage pin).
+    PinName pin = mp_hal_pin_resolve(args[0]);
 
     // Only pins PA6+ support PWM on AmebaDplus.
     if (pin < PA_6) {
