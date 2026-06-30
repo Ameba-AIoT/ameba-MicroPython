@@ -88,6 +88,14 @@ set(MICROPY_SOURCE_QSTR
     ${MICROPY_PORT_DIR}/src/network_common.c
     ${MICROPY_PORT_DIR}/src/machine_pin.c
     ${MICROPY_PORT_DIR}/src/machine_timer.c
+    ${MICROPY_PORT_DIR}/src/machine_uart.c
+    ${MICROPY_PORT_DIR}/src/machine_i2c.c
+    ${MICROPY_PORT_DIR}/src/machine_spi.c
+    ${MICROPY_PORT_DIR}/src/machine_adc.c
+    ${MICROPY_PORT_DIR}/src/machine_pwm.c
+    ${MICROPY_PORT_DIR}/src/machine_rtc.c
+${MICROPY_PORT_DIR}/src/machine_wdt.c
+${MICROPY_PORT_DIR}/src/machine_i2s.c
 )
 
 
@@ -141,6 +149,9 @@ ameba_list_append(private_sources
     network_common.c
     machine_pin.c
     machine_timer.c
+    machine_i2c.c
+    machine_spi.c
+    machine_rtc.c
     ${MICROPY_SOURCE_SHARED}
     ${MICROPY_SOURCE_EXTMOD}
     ${MICROPY_SOURCE_LIB}
@@ -190,6 +201,30 @@ ameba_list_append(private_compile_options
     -Wno-unused-function
     -Wno-pointer-arith
     -Wno-sign-compare
+)
+
+# Upstream bug workaround (does NOT modify upstream source):
+# The blocking machine.I2S write/read spins on the non-volatile ring_buf_t
+# head/tail shared with the GDMA ISR:
+#   while (ringbuf_push(&self->ring_buffer, byte) == false) { ; }
+# At -O2 GCC inlines ringbuf_push and, because head is not volatile, assumes
+# it cannot change inside the spin -> the whole retry collapses to a bare
+# `cmp r7,r3; beq .-0` with head loaded only once. The GDMA ISR advances head
+# in memory but the producer never re-reads it -> permanent deadlock once the
+# ring fills before the first DMA drain (verified in disassembly). No -f flag
+# makes a plain load behave as volatile; compiling this one file at -O0 keeps
+# ringbuf_push out-of-line so head is re-read from memory every iteration.
+# I2S sample copies are not perf-critical, so -O0 here is harmless. Scoped to
+# extmod/machine_i2s.c only; upstream source is untouched.
+#
+# Scope note: this -O0 exists ONLY for the upstream ring_buf_t head/tail, which
+# live in upstream code we may not edit and therefore cannot mark volatile. The
+# port's own ISR<->thread shared state (dma_active / dma_half in machine_i2s.c)
+# is already declared volatile, so it does NOT depend on this flag; if a future
+# refactor removes the -O0 need, those fields stay correct on their own.
+set_source_files_properties(
+    ${MICROPY_DIR}/extmod/machine_i2s.c
+    PROPERTIES COMPILE_OPTIONS "-O0"
 )
 
 # Component private part, user config end(DO NOT remove this line)

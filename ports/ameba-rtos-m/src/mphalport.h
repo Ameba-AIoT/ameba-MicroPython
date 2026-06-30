@@ -28,6 +28,7 @@
 #define MICROPY_INCLUDED_AMEBA_MPHALPORT_H
 
 #include <stdint.h>
+#include "PinNames.h"
 
 // Save PRIMASK and disable all interrupts; return saved state for restoration.
 static inline uint32_t mp_hal_begin_atomic_section(void) {
@@ -43,6 +44,42 @@ static inline void mp_hal_end_atomic_section(uint32_t state) {
 
 #define MICROPY_BEGIN_ATOMIC_SECTION()     mp_hal_begin_atomic_section()
 #define MICROPY_END_ATOMIC_SECTION(state)  mp_hal_end_atomic_section(state)
+
+// Pin HAL type.  Must be a #define (not typedef) so that py/mphal.h sees it
+// is already defined and skips its fallback macro, which would override our
+// mp_hal_get_pin_obj function declaration below.
+#define mp_hal_pin_obj_t PinName
+
+// Used by machine.PWM and other pin-based modules to extract the PinName
+// from a machine.Pin object.  Implemented in machine_pin.c.
+mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj);
+
+// Resolve a user pin argument (Pin object, int PinName, or board string) to a
+// validated PinName, raising ValueError on an unknown pin.  Implemented in
+// machine_pin.c.  Used by machine.I2S, which accepts raw user pin arguments.
+mp_hal_pin_obj_t mp_hal_pin_resolve(void *pin_in);
+
+// Format/name helpers used by extmod machine.I2S.
+#define MP_HAL_PIN_FMT  "%s"
+
+// Return a human-readable pin name.  Rotates through a small ring of static
+// buffers so that multiple calls within a single printf argument list (e.g.
+// machine.I2S print, which formats sck/ws/sd/mck in one mp_printf) each get a
+// distinct buffer instead of all aliasing one — otherwise every "%s" would
+// show the last-evaluated pin name.  Single-threaded use only.
+static inline const char *mp_hal_pin_name(mp_hal_pin_obj_t pin) {
+    #define MP_HAL_PIN_NAME_NBUF  4
+    static char bufs[MP_HAL_PIN_NAME_NBUF][8];
+    static unsigned int next;
+    char *buf = bufs[next++ % MP_HAL_PIN_NAME_NBUF];
+    const char *port = (pin < PB_0) ? "PA" : "PB";
+    int num = (pin < PB_0) ? (int)pin : (int)(pin - PB_0);
+    buf[0] = port[0];
+    buf[1] = port[1];
+    if (num >= 10) { buf[2] = '0' + num / 10; buf[3] = '0' + num % 10; buf[4] = '\0'; }
+    else { buf[2] = '0' + num; buf[3] = '\0'; }
+    return buf;
+}
 
 mp_uint_t mp_hal_ticks_us(void);
 void mp_hal_set_interrupt_char(int c);

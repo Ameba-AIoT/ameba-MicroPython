@@ -95,6 +95,44 @@ soft_reset_exit:
 
     mp_printf(MP_PYTHON_PRINTER, "MPY: soft reboot\n");
 
+    #if MICROPY_PY_MACHINE_UART
+    // Disable UART RX interrupts before the GC heap (which backs the RX ring
+    // buffers) is swept — the static UART objects survive soft reset with the
+    // SDK ISR still armed and would otherwise write into freed memory.
+    extern void machine_uart_deinit_all(void);
+    machine_uart_deinit_all();
+    #endif
+
+    #if MICROPY_PY_MACHINE_I2C
+    // Free I2C peripherals so a re-init after soft reset starts clean (the static
+    // I2C objects survive soft reset with the SDK peripheral still enabled).
+    extern void machine_i2c_deinit_all(void);
+    machine_i2c_deinit_all();
+    #endif
+
+    #if MICROPY_PY_MACHINE_SPI
+    // Free SPI peripherals so a re-init after soft reset starts clean (the static
+    // SPI objects survive soft reset with the SDK peripheral still enabled).
+    extern void machine_spi_deinit_all(void);
+    machine_spi_deinit_all();
+    #endif
+
+    #if MICROPY_PY_MACHINE_PWM
+    // Disable PWM outputs and release pinmux so a re-init after soft reset
+    // starts clean (the static PWM objects survive soft reset).
+    extern void machine_pwm_deinit_all(void);
+    machine_pwm_deinit_all();
+    #endif
+
+    #if MICROPY_PY_MACHINE_I2S
+    // Tear down any live SPORT hardware and drop the heap-allocated I2S
+    // instance pointers (rooted in MP_STATE_PORT, which survives soft reset)
+    // before the GC heap is swept — otherwise the next session would reuse a
+    // dangling pointer and fault in deinit.
+    extern void machine_i2s_deinit_all(void);
+    machine_i2s_deinit_all();
+    #endif
+
     gc_sweep_all();
     #if MICROPY_PY_THREAD
     mp_thread_deinit();

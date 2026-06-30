@@ -27,6 +27,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "ameba_soc.h"
+
+// The Ameba RTC hardware uses Unix timestamps (epoch 1970-01-01).  Define
+// this so that timeutils_seconds_since_epoch_to_struct_time and
+// timeutils_seconds_since_epoch use the same epoch, avoiding a ~30-year
+// date offset.  This also affects machine.RTC and the time module.
+#define MICROPY_EPOCH_IS_1970 (1)
+
 // Python internal features.
 #ifndef MICROPY_CONFIG_ROM_LEVEL
 #define MICROPY_CONFIG_ROM_LEVEL            (MICROPY_CONFIG_ROM_LEVEL_EXTRA_FEATURES)
@@ -112,6 +119,23 @@
 #define MICROPY_PY_MACHINE_BARE_METAL_FUNCS (1)
 #define MICROPY_PY_MACHINE_DISABLE_IRQ_ENABLE_IRQ (1)
 #define MICROPY_PY_MACHINE_PIN_MAKE_NEW     mp_pin_make_new
+
+#define MICROPY_PY_MACHINE_UART              (1)
+#define MICROPY_PY_MACHINE_UART_INCLUDEFILE  "src/machine_uart.c"
+#define MICROPY_PY_MACHINE_UART_IRQ          (0)
+#define MICROPY_PY_MACHINE_I2C               (1)
+#define MICROPY_PY_MACHINE_SPI               (1)
+#define MICROPY_PY_MACHINE_ADC               (1)
+#define MICROPY_PY_MACHINE_ADC_INCLUDEFILE   "src/machine_adc.c"
+#define MICROPY_PY_MACHINE_ADC_DEINIT        (1)
+#define MICROPY_PY_MACHINE_PWM               (1)
+#define MICROPY_PY_MACHINE_PWM_INCLUDEFILE   "src/machine_pwm.c"
+#define MICROPY_PY_MACHINE_RTC               (1)
+#define MICROPY_PY_MACHINE_WDT               (1)
+#define MICROPY_PY_MACHINE_WDT_INCLUDEFILE   "src/machine_wdt.c"
+#define MICROPY_PY_MACHINE_I2S               (1)
+#define MICROPY_PY_MACHINE_I2S_INCLUDEFILE   "src/machine_i2s.c"
+#define MICROPY_PY_MACHINE_I2S_RING_BUF      (1)
 
 
 #define MICROPY_PY_NETWORK (1)
