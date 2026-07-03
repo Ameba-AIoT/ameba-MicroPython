@@ -88,14 +88,15 @@ set(MICROPY_SOURCE_QSTR
     ${MICROPY_PORT_DIR}/src/network_common.c
     ${MICROPY_PORT_DIR}/src/machine_pin.c
     ${MICROPY_PORT_DIR}/src/machine_timer.c
+    ${MICROPY_PORT_DIR}/src/modota.c
     ${MICROPY_PORT_DIR}/src/machine_uart.c
     ${MICROPY_PORT_DIR}/src/machine_i2c.c
     ${MICROPY_PORT_DIR}/src/machine_spi.c
     ${MICROPY_PORT_DIR}/src/machine_adc.c
     ${MICROPY_PORT_DIR}/src/machine_pwm.c
     ${MICROPY_PORT_DIR}/src/machine_rtc.c
-${MICROPY_PORT_DIR}/src/machine_wdt.c
-${MICROPY_PORT_DIR}/src/machine_i2s.c
+    ${MICROPY_PORT_DIR}/src/machine_wdt.c
+    ${MICROPY_PORT_DIR}/src/machine_i2s.c
 )
 
 
@@ -149,9 +150,13 @@ ameba_list_append(private_sources
     network_common.c
     machine_pin.c
     machine_timer.c
+    modota.c
     machine_i2c.c
     machine_spi.c
     machine_rtc.c
+    machine_bitstream.c
+    ${MICROPY_DIR}/drivers/bus/softspi.c
+    ${MICROPY_DIR}/drivers/dht/dht.c
     ${MICROPY_SOURCE_SHARED}
     ${MICROPY_SOURCE_EXTMOD}
     ${MICROPY_SOURCE_LIB}
@@ -225,6 +230,15 @@ ameba_list_append(private_compile_options
 set_source_files_properties(
     ${MICROPY_DIR}/extmod/machine_i2s.c
     PROPERTIES COMPILE_OPTIONS "-O0"
+)
+
+# Upstream drivers/bus/softspi.c (machine.SoftSPI backend) uses the "inline
+# static" declaration order, which the port's -Wextra -Werror flags reject via
+# -Wold-style-declaration.  We may not edit the upstream file, so downgrade just
+# that one warning for just that one file (scoped; upstream source untouched).
+set_source_files_properties(
+    ${MICROPY_DIR}/drivers/bus/softspi.c
+    PROPERTIES COMPILE_OPTIONS "-Wno-error=old-style-declaration"
 )
 
 # Component private part, user config end(DO NOT remove this line)

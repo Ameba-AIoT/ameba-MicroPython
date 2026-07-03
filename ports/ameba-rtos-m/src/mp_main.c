@@ -62,6 +62,8 @@ void mp_main(void * para) {
     #endif
     extern void rtk_loguart_init(void);
     rtk_loguart_init();
+    extern void mp_hal_dwt_init(void);
+    mp_hal_dwt_init();   // enable DWT cycle counter for machine.bitstream
 soft_reset:
     mp_cstack_init_with_top((void *)sp, MICROPY_TASK_STACK_SIZE);
     gc_init(heap, heap + MICROPY_GC_INITIAL_HEAP_SIZE);

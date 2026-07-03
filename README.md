@@ -50,21 +50,19 @@ cd MicroPython
 
 ### Build (recommended)
 
-A top-level `Makefile` wraps the whole flow — submodule setup, toolchain
-environment and the build — into a single command:
+A top-level `Makefile` delegates to the port-level Makefile, which handles
+board selection, toolchain environment and packaging:
 
 ```bash
-make                            # incremental build
-make pristine                   # full (pristine) build
-make clean                      # clean
-make deploy PORT=/dev/ttyUSB0   # flash (skips build; run make first)
-make build deploy PORT=/dev/ttyUSB0  # build, then flash
+make                                    # incremental build (default: BOARD=PKE8721DAF)
+make BOARD=PKE8721DAF                   # explicit board selection
+make pristine                           # full (pristine) build
+make clean                              # clean
+make deploy PORT=/dev/ttyUSB0           # flash (skips build; run make first)
+make build deploy PORT=/dev/ttyUSB0     # build, then flash
 ```
 
-`make` initialises the required submodules on the first run (needs network),
-sources the toolchain environment, and builds.  Submodules are re-synced on
-every run, so a later `git pull` that bumps a submodule pointer is picked up
-automatically.
+Submodules must be initialised once before the first build (see below).
 
 ### Build (manual)
 
@@ -80,7 +78,8 @@ cd ..
 # Each shell session: initialise the toolchain, then build
 source ameba-rtos/env.sh
 cd ports/ameba-rtos-m
-ameba.py build      # or: ameba.py build -p  /  ameba.py clean
+make BOARD=PKE8721DAF           # incremental build
+make BOARD=PKE8721DAF pristine  # full build
 ```
 
 Either way you should see **`Build done`** when the build succeeds.  The
@@ -93,15 +92,16 @@ Either way you should see **`Build done`** when the build succeeds.  The
 ### Flash and run
 
 The build writes the firmware images to
-`ports/ameba-rtos-m/build_RTL8721Dx/` (`boot.bin`, `app.bin`, `ota_all.bin`).
+`ports/ameba-rtos-m/build_PKE8721DAF/` (`boot.bin`, `app.bin`, `firmware.bin`).
 The quickest path is `make deploy`, which flashes without rebuilding — fast
 for repeated deploys (the `PORT` is required; it retries automatically on
 transient flash errors, and `BAUD=` overrides the rate):
 
 ```bash
-make deploy PORT=/dev/ttyUSB0            # flash only (skips build)
-make build deploy PORT=/dev/ttyUSB0      # build, then flash
+make deploy PORT=/dev/ttyUSB0                        # flash only (skips build)
+make build deploy PORT=/dev/ttyUSB0                  # build, then flash
 make build deploy PORT=/dev/ttyUSB0 BAUD=115200
+make BOARD=PKE8721DAF deploy PORT=/dev/ttyUSB0       # explicit board
 ```
 
 Or flash an existing build manually (run `ameba.py flash -h` for options such
@@ -109,7 +109,7 @@ as `-b <baud>` and `--chip-erase`):
 
 ```bash
 cd ports/ameba-rtos-m
-ameba.py flash -p /dev/ttyUSB0
+python ../../ameba-rtos/ameba.py flash -p /dev/ttyUSB0 -dev RTL8721Dx
 ```
 
 Then connect over LOGUART with any serial terminal:
@@ -148,8 +148,13 @@ True
 - Frozen modules: `bundle-networking`, `umqtt`, `dht`, `neopixel` and more
   pre-compiled into the firmware
 - Multi-threading: `_thread` module backed by FreeRTOS tasks
-- `machine` module: `unique_id()`, `reset_cause()` and expanding peripheral
-  APIs
+- `machine` peripheral APIs: `Pin`, `UART` (with IRQ / sendbreak),
+  `SPI`, `SoftSPI`, `I2C`, `SoftI2C`, `ADC`, `PWM`, `RTC`, `WDT`,
+  `Timer`, `I2S`, `bitstream` (WS2812/NeoPixel), `lightsleep`,
+  `deepsleep`, `wake_reason`, `bootloader`
+- `os.dupterm` for WebREPL and multi-console REPL
+- `hashlib` (SHA256/SHA1/MD5), `cryptolib` (AES), `onewire`, `dht`
+- OTA firmware update: `ameba.Partition` / `ameba.OTA`
 
 ## 🔌 Supported hardware
 
@@ -214,26 +219,32 @@ Key port files:
 Phases are listed in implementation order (the `Phase` number is a stable
 identifier, not the sequence).
 
-| Phase | Content                                            | Status        |
-|:-----:|----------------------------------------------------|:-------------:|
-| 0     | Code audit (API residue scan, QSTR completeness)   | Done          |
-| 1     | `network` — Wi-Fi STA / AP / scan                  | Done          |
-| 1.5   | Flash FS layout fix (`ameba.Flash` + VFS)          | Done          |
-| 2     | `machine` — `unique_id()` / `reset_cause()`        | Done          |
-| 3     | `machine.Pin` (digital read/write + IRQ)           | Code complete |
-| 9     | `machine.Timer`                                    | Code complete |
-| 4     | `machine.UART`                                     | Planned       |
-| 6     | `machine.I2C`                                      | Planned       |
-| 8     | `machine.PWM`                                      | Planned       |
-| 7     | `machine.ADC`                                      | Planned       |
-| 5     | `machine.SPI`                                      | Planned       |
-| 11    | `machine.WDT`                                      | Planned       |
-| 10    | `machine.RTC`                                      | Planned       |
-| 16    | `ameba.Partition` / OTA                            | In progress   |
-| 15    | USB CDC REPL                                       | Planned       |
-| 12    | Bluetooth BLE (GAP / GATT)                         | Planned       |
-| 13    | `machine.I2S`                                      | Planned       |
-| 14    | `machine.SDCard`                                   | Planned       |
+| Phase | Content                                                        | Status        |
+|:-----:|----------------------------------------------------------------|:-------------:|
+| 0     | Code audit (API residue scan, QSTR completeness)               | Done          |
+| 1     | `network` — Wi-Fi STA / AP / scan                              | Done          |
+| 1.5   | Flash FS layout fix (`ameba.Flash` + VFS)                      | Done          |
+| 2     | `machine` — `unique_id()` / `reset_cause()`                    | Done          |
+| 3     | `machine.Pin` (digital read/write + IRQ)                       | Done          |
+| 4     | `machine.UART` (+ IRQ / sendbreak)                             | Done          |
+| 5     | `machine.SPI` / `SoftSPI`                                      | Done          |
+| 6     | `machine.I2C` / `SoftI2C`                                      | Done          |
+| 7     | `machine.ADC`                                                  | Done          |
+| 8     | `machine.PWM`                                                  | Done          |
+| 9     | `machine.Timer`                                                | Done          |
+| 10    | `machine.RTC`                                                  | Done          |
+| 11    | `machine.WDT`                                                  | Done          |
+| 13    | `machine.I2S`                                                  | Done          |
+| 16    | `ameba.Partition` / OTA                                        | Done          |
+| 20    | `machine.lightsleep` / `deepsleep` / `wake_reason`             | Done          |
+| 21    | `SoftI2C`, `SoftSPI`, `time_pulse_us`                          | Done          |
+| 22    | `machine.bitstream` (WS2812/NeoPixel)                          | Done          |
+| 23    | `machine.UART.irq`                                             | Done          |
+| 24    | `machine.UART.sendbreak`                                       | Done          |
+| 27    | `machine.bootloader()`                                         | Done          |
+| 28    | `os.dupterm` / WebREPL                                         | Done          |
+| 14    | `machine.SDCard`                                               | Planned       |
+| 15    | USB CDC REPL                                                   | Planned       |
+| 12    | Bluetooth BLE (GAP / GATT)                                     | Planned       |
 
-*Code complete* means the implementation is merged and builds, with
-on-hardware verification still pending.
+*Done* means implementation merged and verified on PKE8721DAF hardware.

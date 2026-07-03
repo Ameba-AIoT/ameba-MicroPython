@@ -49,20 +49,19 @@ cd MicroPython
 
 ### 编译（推荐）
 
-根目录提供了 `Makefile`，把整个流程——子模块初始化、工具链环境、编译——
-封装成一条命令：
+根目录 `Makefile` 委托给 port 级 Makefile，由后者负责 board 选择、工具链
+环境和固件打包：
 
 ```bash
-make                            # 增量编译
-make pristine                   # 全量（pristine）编译
-make clean                      # 清理
-make deploy PORT=/dev/ttyUSB0        # 仅烧录（跳过编译）
-make build deploy PORT=/dev/ttyUSB0  # 先编译再烧录
+make                                    # 增量编译（默认：BOARD=PKE8721DAF）
+make BOARD=PKE8721DAF                   # 显式指定 board
+make pristine                           # 全量（pristine）编译
+make clean                              # 清理
+make deploy PORT=/dev/ttyUSB0           # 仅烧录（跳过编译）
+make build deploy PORT=/dev/ttyUSB0     # 先编译再烧录
 ```
 
-`make` 会在首次运行时初始化所需子模块（需联网）、source 工具链环境并编译。
-子模块在每次运行时都会重新同步，因此之后 `git pull` 升级了子模块指针也会被
-自动同步，不会静默编译旧版本。
+首次编译前需手动初始化子模块（见下方）。
 
 ### 编译（手动）
 
@@ -76,9 +75,9 @@ git submodule update --init lib/berkeley-db-1.xx lib/micropython-lib
 cd ..
 
 # 每个 shell 会话：初始化工具链，然后编译
-source ameba-rtos/env.sh
 cd ports/ameba-rtos-m
-ameba.py build      # 或：ameba.py build -p  /  ameba.py clean
+make BOARD=PKE8721DAF           # 增量编译
+make BOARD=PKE8721DAF pristine  # 全量编译
 ```
 
 两种方式下，编译成功时你都应看到 **`Build done`**。`mpy-cross` 字节码编译器
@@ -90,14 +89,15 @@ ameba.py build      # 或：ameba.py build -p  /  ameba.py clean
 
 ### 烧录与运行
 
-编译产物（固件镜像）位于 `ports/ameba-rtos-m/build_RTL8721Dx/`（`boot.bin`、
-`app.bin`、`ota_all.bin`）。最便捷的方式是 `make deploy`，它跳过编译直接烧录，适合重复烧录场景
-（`PORT` 必传；遇到偶发烧录失败会自动重试，`BAUD=` 可覆盖波特率）：
+编译产物（固件镜像）位于 `ports/ameba-rtos-m/build_PKE8721DAF/`（`boot.bin`、
+`app.bin`、`firmware.bin`）。最便捷的方式是 `make deploy`，它跳过编译直接烧录，
+适合重复烧录场景（`PORT` 必传；遇到偶发烧录失败会自动重试，`BAUD=` 可覆盖波特率）：
 
 ```bash
-make deploy PORT=/dev/ttyUSB0                   # 仅烧录（跳过编译）
-make build deploy PORT=/dev/ttyUSB0             # 先编译再烧录
+make deploy PORT=/dev/ttyUSB0                        # 仅烧录（跳过编译）
+make build deploy PORT=/dev/ttyUSB0                  # 先编译再烧录
 make build deploy PORT=/dev/ttyUSB0 BAUD=115200
+make BOARD=PKE8721DAF deploy PORT=/dev/ttyUSB0       # 显式指定 board
 ```
 
 也可以对已有的编译产物手动烧录（`ameba.py flash -h` 查看 `-b <波特率>`、
@@ -105,7 +105,7 @@ make build deploy PORT=/dev/ttyUSB0 BAUD=115200
 
 ```bash
 cd ports/ameba-rtos-m
-ameba.py flash -p /dev/ttyUSB0
+python ../../ameba-rtos/ameba.py flash -p /dev/ttyUSB0 -dev RTL8721Dx
 ```
 
 然后通过 LOGUART 用任意串口终端连接：
@@ -144,7 +144,12 @@ True
 - 冻结模块（Frozen modules）：`bundle-networking`、`umqtt`、`dht`、`neopixel`
   等已预编译进固件
 - 多线程：由 FreeRTOS 任务支撑的 `_thread` 模块
-- `machine` 模块：`unique_id()`、`reset_cause()` 及不断扩充的外设 API
+- `machine` 外设 API：`Pin`、`UART`（含 IRQ / sendbreak）、`SPI`、`SoftSPI`、
+  `I2C`、`SoftI2C`、`ADC`、`PWM`、`RTC`、`WDT`、`Timer`、`I2S`、`bitstream`
+  （WS2812/NeoPixel）、`lightsleep`、`deepsleep`、`wake_reason`、`bootloader`
+- `os.dupterm` 支持 WebREPL 及多控制台 REPL
+- `hashlib`（SHA256/SHA1/MD5）、`cryptolib`（AES）、`onewire`、`dht`
+- OTA 固件升级：`ameba.Partition` / `ameba.OTA`
 
 ## 🔌 支持的硬件
 
@@ -207,25 +212,32 @@ MicroPython/
 
 下表按**实现先后顺序**排列（`Phase` 编号是稳定标识，不代表顺序）。
 
-| Phase | 内容                                               | 状态         |
-|:-----:|----------------------------------------------------|:------------:|
-| 0     | 代码审计（API 残留扫描、QSTR 完整性）              | 完成         |
-| 1     | `network` — Wi-Fi STA / AP / scan                  | 完成         |
-| 1.5   | Flash FS 布局修正（`ameba.Flash` + VFS）           | 完成         |
-| 2     | `machine` — `unique_id()` / `reset_cause()`        | 完成         |
-| 3     | `machine.Pin`（数字读写 + IRQ）                    | 代码完成     |
-| 9     | `machine.Timer`                                    | 代码完成     |
-| 4     | `machine.UART`                                     | 计划中       |
-| 6     | `machine.I2C`                                      | 计划中       |
-| 8     | `machine.PWM`                                      | 计划中       |
-| 7     | `machine.ADC`                                      | 计划中       |
-| 5     | `machine.SPI`                                      | 计划中       |
-| 11    | `machine.WDT`                                      | 计划中       |
-| 10    | `machine.RTC`                                      | 计划中       |
-| 16    | `ameba.Partition` / OTA                            | 进行中       |
-| 15    | USB CDC REPL                                       | 计划中       |
-| 12    | Bluetooth BLE（GAP / GATT）                        | 计划中       |
-| 13    | `machine.I2S`                                      | 计划中       |
-| 14    | `machine.SDCard`                                   | 计划中       |
+| Phase | 内容                                                           | 状态         |
+|:-----:|----------------------------------------------------------------|:------------:|
+| 0     | 代码审计（API 残留扫描、QSTR 完整性）                          | 完成         |
+| 1     | `network` — Wi-Fi STA / AP / scan                              | 完成         |
+| 1.5   | Flash FS 布局修正（`ameba.Flash` + VFS）                       | 完成         |
+| 2     | `machine` — `unique_id()` / `reset_cause()`                    | 完成         |
+| 3     | `machine.Pin`（数字读写 + IRQ）                                | 完成         |
+| 4     | `machine.UART`（含 IRQ / sendbreak）                           | 完成         |
+| 5     | `machine.SPI` / `SoftSPI`                                      | 完成         |
+| 6     | `machine.I2C` / `SoftI2C`                                      | 完成         |
+| 7     | `machine.ADC`                                                  | 完成         |
+| 8     | `machine.PWM`                                                  | 完成         |
+| 9     | `machine.Timer`                                                | 完成         |
+| 10    | `machine.RTC`                                                  | 完成         |
+| 11    | `machine.WDT`                                                  | 完成         |
+| 13    | `machine.I2S`                                                  | 完成         |
+| 16    | `ameba.Partition` / OTA                                        | 完成         |
+| 20    | `machine.lightsleep` / `deepsleep` / `wake_reason`             | 完成         |
+| 21    | `SoftI2C`、`SoftSPI`、`time_pulse_us`                          | 完成         |
+| 22    | `machine.bitstream`（WS2812/NeoPixel）                         | 完成         |
+| 23    | `machine.UART.irq`                                             | 完成         |
+| 24    | `machine.UART.sendbreak`                                       | 完成         |
+| 27    | `machine.bootloader()`                                         | 完成         |
+| 28    | `os.dupterm` / WebREPL                                         | 完成         |
+| 14    | `machine.SDCard`                                               | 计划中       |
+| 15    | USB CDC REPL                                                   | 计划中       |
+| 12    | Bluetooth BLE（GAP / GATT）                                    | 计划中       |
 
-*代码完成（Code complete）* 指实现已合入且可编译，但硬件验证尚未完成。
+*完成* 指实现已合入并在 PKE8721DAF 硬件上验证通过。

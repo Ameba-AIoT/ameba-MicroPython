@@ -27,9 +27,12 @@
 #include "ameba_flash.h"
 #include "py/runtime.h"
 
+extern const mp_obj_type_t ameba_ota_type;
+
 static const mp_rom_map_elem_t ameba_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_ameba) },
-    { MP_ROM_QSTR(MP_QSTR_Flash), MP_ROM_PTR(&flash_type) },
+    { MP_ROM_QSTR(MP_QSTR_Flash),    MP_ROM_PTR(&flash_type) },
+    { MP_ROM_QSTR(MP_QSTR_OTA),      MP_ROM_PTR(&ameba_ota_type) },
 };
 static MP_DEFINE_CONST_DICT(ameba_module_globals, ameba_module_globals_table);
 

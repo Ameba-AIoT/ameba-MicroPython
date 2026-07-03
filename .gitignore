@@ -71,3 +71,11 @@ smart_voice_v11/src/make/lib_smart_voice.a
 
 # ignore submodules end
 .stamps/
+
+# Reference documents and hardware spec sheets (local only, not for repo)
+*.pdf
+*.xlsx
+*.xls
+~$*
+*.orig.png
+*.jpg

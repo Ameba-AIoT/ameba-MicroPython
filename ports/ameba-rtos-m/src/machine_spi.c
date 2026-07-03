@@ -24,26 +24,33 @@
 #define SPI_DEFAULT_PHASE     (0)
 #define SPI_DEFAULT_BITS      (8)
 
-// AmebaDplus SPI0 dedicated-pinmux group (PINMUX_FUNCTION_SPI). Of the five
-// dedicated groups, four are muxed to boot flash (PA14-17) or OSPI/PSRAM
-// (PA12/26-28, PA29-31/PB17, PB18-21); Group3 (PB23-26) is the ONLY group with no
-// flash/OSPI/PSRAM overlap, so it is the safe default. The previous default
-// (PA26/27/28/12) sat on OSPI/PSRAM pins and never transferred. Override via
-// sck=/mosi=/miso=. (PB25 exceeds the machine.Pin GPIO range but the SPI pinmux
-// accepts it.)
+// SPI0 default pins — overridable per-board in mpconfigboard.h.
+// PINMUX_FUNCTION_SPI (ID=8) maps each pin to a fixed hardware role:
+//   PA26=CLK, PA27=MOSI, PA28=MISO (group on PKE8721DAF board headers)
+// These roles are determined by pin number, not by which argument they are
+// passed in — the hardware routes PA26 to CLK regardless of whether the
+// caller calls it "sck" or "mosi".
+// SPI1 (MBED_SPI1) uses PINMUX_FUNCTION_SPI1_x (ID=29-32) which allows any
+// GPIO; users should always specify sck=/mosi=/miso= explicitly for SPI(1).
 //
 // Chip-select is NOT managed here, matching the upstream machine.SPI convention
 // (esp32 sets spics_io_num=-1, rp2 never touches CSn): the application drives CS
-// itself via a machine.Pin. The Ameba mbed HAL spi_init(), however, mandates a
-// CS pad and unconditionally muxes it, so we hand it a fixed scratch pad (PB_26)
-// and immediately release that pad back to GPIO after init. The SSI core's
-// internal SPI_SER (set by SSI_Init) drives the transfer regardless of whether a
-// CS pad is muxed, so transfers work with no physical CS line and PB_26 stays
-// free for reuse.
-#define SPI0_DEFAULT_SCK   (PB_23)   // SPI0_CLK
-#define SPI0_DEFAULT_MOSI  (PB_24)   // SPI0_MOSI
-#define SPI0_DEFAULT_MISO  (PB_25)   // SPI0_MISO
-#define SPI0_SCRATCH_CS    (PB_26)   // HAL-mandated CS pad, released to GPIO after init
+// itself via a machine.Pin.  The Ameba mbed HAL spi_init() mandates a CS pad,
+// so we pass a scratch pad (PA_12, SPI0_CS capable) and immediately release it
+// back to GPIO.  The SSI core's internal SPI_SER drives transfers regardless of
+// whether a CS pad is muxed, so transfers work with no physical CS line.
+#ifndef MICROPY_HW_SPI0_SCK
+#define MICROPY_HW_SPI0_SCK   (PA_26)  // SPI0_CLK  — on PKE8721DAF board
+#endif
+#ifndef MICROPY_HW_SPI0_MOSI
+#define MICROPY_HW_SPI0_MOSI  (PA_27)  // SPI0_MOSI — on PKE8721DAF board
+#endif
+#ifndef MICROPY_HW_SPI0_MISO
+#define MICROPY_HW_SPI0_MISO  (PA_28)  // SPI0_MISO — on PKE8721DAF board
+#endif
+#ifndef MICROPY_HW_SPI0_CS
+#define MICROPY_HW_SPI0_CS    (PA_12)  // SPI0_CS scratch pad, released after init
+#endif
 
 typedef struct _machine_spi_obj_t {
     mp_obj_base_t base;
@@ -141,10 +148,10 @@ static void mp_machine_spi_init_helper(machine_spi_obj_t *self, size_t n_args,
         self->phase = SPI_DEFAULT_PHASE;
         self->bits = SPI_DEFAULT_BITS;
         self->firstbit = MICROPY_PY_MACHINE_SPI_MSB;
-        self->sck = SPI0_DEFAULT_SCK;
-        self->mosi = SPI0_DEFAULT_MOSI;
-        self->miso = SPI0_DEFAULT_MISO;
-        self->cs = SPI0_SCRATCH_CS;
+        self->sck = MICROPY_HW_SPI0_SCK;
+        self->mosi = MICROPY_HW_SPI0_MOSI;
+        self->miso = MICROPY_HW_SPI0_MISO;
+        self->cs = MICROPY_HW_SPI0_CS;
     }
 
     if (args[ARG_baudrate].u_int > 0) {

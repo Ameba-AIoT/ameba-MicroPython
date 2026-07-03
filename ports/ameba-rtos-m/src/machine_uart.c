@@ -9,6 +9,10 @@
 
 #include "serial_api.h"
 #include "PinNames.h"
+#include "shared/runtime/mpirq.h"
+
+// UART IRQ trigger constant (port-defined, matches esp32 naming).
+#define UART_IRQ_RX  (1)
 
 #define UART_ID_COUNT (2)
 
@@ -21,11 +25,25 @@
 // (avoids a silent wrap to 0 → division-by-zero in ringbuf_put/avail).
 #define UART_MAX_RXBUF        (8192)
 
-// UART0 default pins (overridable via tx=/rx=); UART1 pins are fixed by HW.
-#define UART0_DEFAULT_TX  (PA_7)
-#define UART0_DEFAULT_RX  (PA_8)
-#define UART1_FIXED_TX    (PB_31)
-#define UART1_FIXED_RX    (PB_30)
+// Default UART pins — overridable per-board in mpconfigboard.h.
+// Fallback values match PKE8721DAF board spec (Table 10 NOTE):
+//   PA31 = UART_TX (Default), PA30 = UART_RX (Default).
+// Both UART0 and UART1 accept any valid GPIO; there are no hardware-fixed
+// pins.  The SDK's uart_tx_index_get() special-casing of PB31 is a legacy
+// artefact; the correct pinmux (PINMUX_FUNCTION_UART0/1_TXD) is selected
+// by the else-branch in serial_init() for any non-PB31 pin.
+#ifndef MICROPY_HW_UART0_TX
+#define MICROPY_HW_UART0_TX  (PA_31)
+#endif
+#ifndef MICROPY_HW_UART0_RX
+#define MICROPY_HW_UART0_RX  (PA_30)
+#endif
+#ifndef MICROPY_HW_UART1_TX
+#define MICROPY_HW_UART1_TX  (PA_29)
+#endif
+#ifndef MICROPY_HW_UART1_RX
+#define MICROPY_HW_UART1_RX  (PA_28)
+#endif
 
 typedef struct _machine_uart_obj_t {
     mp_obj_base_t base;
@@ -42,6 +60,11 @@ typedef struct _machine_uart_obj_t {
     uint16_t      rxbuf_len;     // RX ringbuf capacity (excludes the +1 slot)
     ringbuf_t     read_buffer;   // RX ringbuf, filled by ISR
     bool          initialized;
+    #if MICROPY_PY_MACHINE_UART_IRQ
+    uint16_t      mp_irq_trigger;   // user-configured trigger mask
+    uint16_t      mp_irq_flags;     // trigger flags from last ISR
+    mp_irq_obj_t *mp_irq_obj;       // Python callback object
+    #endif
 } machine_uart_obj_t;
 
 static machine_uart_obj_t machine_uart_obj[UART_ID_COUNT];
@@ -87,20 +110,17 @@ static PinName machine_uart_get_pin(mp_obj_t obj) {
     mp_raise_ValueError(MP_ERROR_TEXT("invalid tx/rx pin"));
 }
 
-// Validate that a pin maps (without SDK assert) to the requested uart id.
-// Illegal-for-index-0 set = {PA_0..PA_5, PB_12}; index 1 fixed to PB_31/PB_30.
+// Validate a UART pin.  Both UART0 and UART1 support the full flexible
+// pinmux: any GPIO >= PA_6 (excluding non-existent PB_12) is valid.
+// PA_0..PA_5 are excluded because they are bonded to MCM Flash internally.
 static bool uart_tx_pin_ok(uint8_t id, PinName tx) {
-    if (id == 1) {
-        return tx == UART1_FIXED_TX;
-    }
-    return (tx >= PA_6) && (tx != PB_12) && (tx != UART1_FIXED_TX);
+    (void)id;
+    return (tx >= PA_6) && (tx != PB_12);
 }
 
 static bool uart_rx_pin_ok(uint8_t id, PinName rx) {
-    if (id == 1) {
-        return rx == UART1_FIXED_RX;
-    }
-    return (rx >= PA_6) && (rx != PB_12) && (rx != UART1_FIXED_RX);
+    (void)id;
+    return (rx >= PA_6) && (rx != PB_12);
 }
 
 // ---- Task 6: print ----
@@ -133,6 +153,12 @@ static void machine_uart_irq_handler(uint32_t id, SerialIrq event) {
             // Drop on overflow (ringbuf_put returns -1 when full).
             ringbuf_put(&self->read_buffer, (uint8_t)c);
         }
+        #if MICROPY_PY_MACHINE_UART_IRQ
+        if (self->mp_irq_obj && (self->mp_irq_trigger & UART_IRQ_RX)) {
+            self->mp_irq_flags = UART_IRQ_RX;
+            mp_irq_handler(self->mp_irq_obj);
+        }
+        #endif
     }
 }
 
@@ -165,8 +191,8 @@ static void mp_machine_uart_init_helper(machine_uart_obj_t *self, size_t n_args,
         self->timeout = 0;
         self->timeout_char = 0;
         self->rxbuf_len = UART_DEFAULT_RXBUF;
-        self->tx = (self->uart_id == 1) ? UART1_FIXED_TX : UART0_DEFAULT_TX;
-        self->rx = (self->uart_id == 1) ? UART1_FIXED_RX : UART0_DEFAULT_RX;
+        self->tx = (self->uart_id == 1) ? MICROPY_HW_UART1_TX : MICROPY_HW_UART0_TX;
+        self->rx = (self->uart_id == 1) ? MICROPY_HW_UART1_RX : MICROPY_HW_UART0_RX;
     }
 
     if (args[ARG_baudrate].u_int > 0) {
@@ -398,3 +424,87 @@ static mp_uint_t mp_machine_uart_ioctl(mp_obj_t self_in, mp_uint_t request, uint
     }
     return ret;
 }
+
+// ---------------------------------------------------------------------------
+// sendbreak — hold TX low for one character-time (break signal)
+// ---------------------------------------------------------------------------
+#if MICROPY_PY_MACHINE_UART_SENDBREAK
+static void mp_machine_uart_sendbreak(machine_uart_obj_t *self) {
+    // A break = TX held low for ≥ 1 frame (10-11 bit-periods at current baud).
+    // serial_set_flow_control is not for this; use a manual delay via TX-low pulse.
+    // Approximate: 13 bit-periods at current baudrate (11 for frame + 2 guard).
+    uint32_t break_us = 13 * 1000000UL / self->baudrate;
+    serial_break_set(&self->serial);
+    mp_hal_delay_us(break_us);
+    serial_break_clear(&self->serial);
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// irq — register a Python callback for UART events
+// ---------------------------------------------------------------------------
+#if MICROPY_PY_MACHINE_UART_IRQ
+
+// Trigger constants (match esp32 names for cross-port compatibility).
+#define UART_IRQ_RX  (1)
+
+static const mp_irq_methods_t machine_uart_irq_methods;
+
+static mp_irq_obj_t *mp_machine_uart_irq(machine_uart_obj_t *self,
+    bool any_args, mp_arg_val_t *args) {
+
+    if (any_args) {
+        // Disable existing IRQ before re-configuring.
+        if (self->mp_irq_obj) {
+            self->mp_irq_trigger = 0;
+            self->mp_irq_obj = NULL;
+        }
+
+        mp_arg_val_t *a = args;
+        // args layout per extmod/machine_uart.h:
+        //   ARG_handler, ARG_trigger, ARG_hard (hard IRQ not supported here)
+        mp_obj_t handler = a[0].u_obj;
+        mp_uint_t trigger = (mp_uint_t)a[1].u_int;
+
+        if (handler != mp_const_none && trigger != 0) {
+            mp_irq_obj_t *irq = mp_irq_new(&machine_uart_irq_methods,
+                MP_OBJ_FROM_PTR(self));
+            irq->handler = handler;
+            irq->ishard = false;
+            self->mp_irq_obj = irq;
+            self->mp_irq_trigger = (uint16_t)trigger;
+        }
+    }
+
+    if (self->mp_irq_obj == NULL) {
+        // Return a dummy IRQ object if none configured.
+        mp_irq_obj_t *irq = mp_irq_new(&machine_uart_irq_methods,
+            MP_OBJ_FROM_PTR(self));
+        irq->handler = mp_const_none;
+        return irq;
+    }
+    return self->mp_irq_obj;
+}
+
+static mp_uint_t machine_uart_irq_trigger(mp_obj_t self_in, mp_uint_t new_trigger) {
+    machine_uart_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    self->mp_irq_trigger = (uint16_t)new_trigger;
+    return 0;
+}
+
+static mp_uint_t machine_uart_irq_info(mp_obj_t self_in, mp_uint_t info_type) {
+    machine_uart_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    if (info_type == MP_IRQ_INFO_FLAGS) {
+        return self->mp_irq_flags;
+    } else if (info_type == MP_IRQ_INFO_TRIGGERS) {
+        return self->mp_irq_trigger;
+    }
+    return 0;
+}
+
+static const mp_irq_methods_t machine_uart_irq_methods = {
+    .trigger  = machine_uart_irq_trigger,
+    .info     = machine_uart_irq_info,
+};
+
+#endif // MICROPY_PY_MACHINE_UART_IRQ

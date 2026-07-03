@@ -33,6 +33,7 @@
 #include "shared/runtime/interrupt_char.h"
 #include "py/runtime.h"
 #include "py/stream.h"
+#include "extmod/misc.h"
 
 static uint8_t uart_ringbuf_array[256];
 // SPSC: log_uart_irq (ISR) is the sole producer; mp_hal_stdin_rx_chr (task) is the sole consumer.
@@ -63,6 +64,12 @@ int mp_hal_stdin_rx_chr(void) {
         if (c != -1) {
             return c;
         }
+        #if MICROPY_PY_OS_DUPTERM
+        int dupterm_c = mp_os_dupterm_rx_chr();
+        if (dupterm_c >= 0) {
+            return dupterm_c;
+        }
+        #endif
         MICROPY_EVENT_POLL_HOOK
     }
 }
@@ -70,6 +77,11 @@ int mp_hal_stdin_rx_chr(void) {
 extern void LOGUART_PutChar_RAM(u8 c);
 mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len)
 {
+    #if MICROPY_PY_OS_DUPTERM
+    // Mirror REPL output to any dupterm streams (WebREPL, second console, ...).
+    // Called before the LOGUART loop, which consumes str/len.
+    mp_os_dupterm_tx_strn(str, len);
+    #endif
 	mp_uint_t nChars = 0;
     //DiagPrintfNano("%s %x\r\n", __FUNCTION__, __builtin_return_address(0));
 	for (/*Empty */; len > 0; --len) {
@@ -87,8 +99,19 @@ mp_uint_t mp_hal_ticks_ms(void) {
 mp_uint_t mp_hal_ticks_us(void) {
     return rtos_time_get_current_system_time_us();
 }
+// DWT cycle counter for sub-microsecond timing (machine.bitstream / neopixel).
+// RTL8721Dx KM4 runs at 200 MHz → 1 cycle = 5 ns, well within the ±150 ns
+// WS2812 tolerance.  The counter must be explicitly enabled after every cold
+// boot; it resets to 0 on power-on but the TRCENA and CYCCNTENA enable bits
+// are cleared, so the register reads 0 without this initialisation.
+void mp_hal_dwt_init(void) {
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;  // enable trace subsystem
+    DWT->CYCCNT = 0;
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;            // start cycle counter
+}
+
 mp_uint_t mp_hal_ticks_cpu(void) {
-    return rtos_time_get_current_system_time_ns();
+    return DWT->CYCCNT;
 }
 
 uint64_t mp_hal_time_ns(void) {

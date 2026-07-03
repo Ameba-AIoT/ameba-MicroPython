@@ -63,6 +63,7 @@
 
 #define MICROPY_OPT_COMPUTED_GOTO           (1)
 #define MICROPY_ENABLE_GC                       (1)
+#define MICROPY_ENABLE_FINALISER                (1)
 #define MICROPY_READER_VFS                      (1)
 #define MICROPY_STACK_CHECK_MARGIN              (1024)
 #define MICROPY_WARNINGS                        (1)
@@ -99,8 +100,8 @@
 // EXTRA_FEATURES extra
 #define MICROPY_PY_RANDOM_SEED_INIT_FUNC    (_rand())
 // modos.c is removed: urandom is handled by extmod via mp_hal_get_random() below
-// #define MICROPY_PY_OS_DUPTERM               (1)
-// #define MICROPY_PY_OS_DUPTERM_NOTIFY        (1)
+#define MICROPY_PY_OS_DUPTERM               (1)
+#define MICROPY_PY_OS_DUPTERM_NOTIFY        (1)
 #define MICROPY_PY_OS_SYNC                  (1)
 #define MICROPY_PY_OS_UNAME                 (1)
 #define MICROPY_PY_OS_URANDOM               (1)
@@ -122,9 +123,18 @@
 
 #define MICROPY_PY_MACHINE_UART              (1)
 #define MICROPY_PY_MACHINE_UART_INCLUDEFILE  "src/machine_uart.c"
-#define MICROPY_PY_MACHINE_UART_IRQ          (0)
+#define MICROPY_PY_MACHINE_UART_IRQ          (1)
+#define MICROPY_PY_MACHINE_UART_IRQ_RXIDLE   (0)   // not yet implemented
+#define MICROPY_PY_MACHINE_UART_SENDBREAK    (1)
+// UART IRQ trigger constants exposed to Python (machine.UART.IRQ_RX etc.)
+#define MICROPY_PY_MACHINE_UART_IRQ_FLAG_RX  (1)
 #define MICROPY_PY_MACHINE_I2C               (1)
+#define MICROPY_PY_MACHINE_SOFTI2C           (1)
 #define MICROPY_PY_MACHINE_SPI               (1)
+#define MICROPY_PY_MACHINE_SOFTSPI           (1)
+#define MICROPY_PY_MACHINE_PULSE             (1)
+#define MICROPY_PY_MACHINE_BITSTREAM         (1)
+#define MICROPY_PY_MACHINE_BOOTLOADER        (1)
 #define MICROPY_PY_MACHINE_ADC               (1)
 #define MICROPY_PY_MACHINE_ADC_INCLUDEFILE   "src/machine_adc.c"
 #define MICROPY_PY_MACHINE_ADC_DEINIT        (1)
@@ -149,9 +159,19 @@
 #define MICROPY_SSL_MBEDTLS                 (1)
 #define MICROPY_PY_WEBSOCKET                (1)
 #define MICROPY_PY_WEBREPL                  (1)
-// #define MICROPY_PY_ONEWIRE                  (1)
+#define MICROPY_PY_ONEWIRE                  (1)
+#define MICROPY_PY_MACHINE_DHT_READINTO     (1)
 #define MICROPY_PY_SOCKET_EVENTS            (0)
-// #define MICROPY_PY_BLUETOOTH_RANDOM_ADDR    (1)
+
+// hashlib/cryptolib — backed by mbedtls already linked for SSL
+#define MICROPY_PY_HASHLIB_SHA256           (1)
+#define MICROPY_PY_HASHLIB_SHA1             (1)
+#define MICROPY_PY_HASHLIB_MD5              (1)
+#define MICROPY_PY_CRYPTOLIB                (1)
+
+// re enhancements — pure software switches
+#define MICROPY_PY_RE_MATCH_GROUPS          (1)
+#define MICROPY_PY_RE_MATCH_SPAN_START_END  (1)
 
 
 #define MICROPY_PY_MATH_GAMMA_FIX_NEGINF (1)

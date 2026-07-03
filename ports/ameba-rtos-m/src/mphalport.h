@@ -29,6 +29,10 @@
 
 #include <stdint.h>
 #include "PinNames.h"
+#include "py/ringbuf.h"
+
+// Exposed for os.dupterm_notify (modos.c needs to push bytes into stdin).
+extern ringbuf_t stdin_ringbuf;
 
 // Save PRIMASK and disable all interrupts; return saved state for restoration.
 static inline uint32_t mp_hal_begin_atomic_section(void) {
@@ -59,6 +63,16 @@ mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj);
 // machine_pin.c.  Used by machine.I2S, which accepts raw user pin arguments.
 mp_hal_pin_obj_t mp_hal_pin_resolve(void *pin_in);
 
+// HAL pin primitives used by machine.SoftI2C / machine.SoftSPI /
+// machine.time_pulse_us.  Implemented in machine_pin.c.
+void mp_hal_pin_input(mp_hal_pin_obj_t pin);
+void mp_hal_pin_output(mp_hal_pin_obj_t pin);
+void mp_hal_pin_open_drain(mp_hal_pin_obj_t pin);
+int mp_hal_pin_read(mp_hal_pin_obj_t pin);
+void mp_hal_pin_write(mp_hal_pin_obj_t pin, int v);
+void mp_hal_pin_od_low(mp_hal_pin_obj_t pin);
+void mp_hal_pin_od_high(mp_hal_pin_obj_t pin);
+
 // Format/name helpers used by extmod machine.I2S.
 #define MP_HAL_PIN_FMT  "%s"
 
@@ -82,6 +96,16 @@ static inline const char *mp_hal_pin_name(mp_hal_pin_obj_t pin) {
 }
 
 mp_uint_t mp_hal_ticks_us(void);
+
+// machine.SoftI2C uses the "fast" delay variant; we have no lower-overhead path
+// than mp_hal_delay_us, so alias it.
+#define mp_hal_delay_us_fast(us) mp_hal_delay_us(us)
+
+// DHT driver needs quiet-timing guards (disable/restore interrupts around
+// the bit-bang timing loop to prevent jitter from preemption).
+#define mp_hal_quiet_timing_enter() mp_hal_begin_atomic_section()
+#define mp_hal_quiet_timing_exit(v) mp_hal_end_atomic_section(v)
+
 void mp_hal_set_interrupt_char(int c);
 void mp_hal_get_random(size_t n, void *buf);
 

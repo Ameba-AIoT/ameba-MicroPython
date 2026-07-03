@@ -73,11 +73,27 @@ typedef struct _machine_pin_obj_t {
     ((machine_pin_obj_t *)((char *)(irq_ptr) - offsetof(machine_pin_obj_t, irq)))
 
 // ---------------------------------------------------------------------------
-// Valid PinName check
-// PA_0=0..PA_24=24, PB_0=32..PB_24=56
+// Valid PinName check (RTL8721DAF SoC level)
+//
+// Excluded at hardware level (cannot be safely used on any board):
+//   PA_0..PA_5 : SPIC0 primary pins, physically bonded to MCM Flash die
+//                inside the chip package — reconfiguring pinmux disconnects
+//                Flash and hangs the system on all RTL8721DAF boards.
+//
+// All other PA/PB pins are valid at SoC level.  Board-level restrictions
+// (e.g. PA_13..PA_18 used for Flash on PKE8721DAF) are handled by the
+// board's pins.csv, which omits those pins from the user-visible name table.
+//
+// PA_6 ..PA_12 : SPIC1_PSRAM capable; RTL8721DAF has no PSRAM → free GPIO
+// PA_13..PA_18 : SPIC0 alternate Flash pins on PKE8721DAF, but valid SoC
+//                pins on other boards — excluded from pins.csv, not here
+// PA_19..PA_31 : General GPIO (PA_26..PA_31 on PKE8721DAF board headers)
+// PB_0 ..PB_24 : Includes all board-exposed PB pins
 // ---------------------------------------------------------------------------
 #define IS_VALID_PINNAME(p) \
-    (((p) >= PA_0 && (p) <= PA_24) || ((p) >= PB_0 && (p) <= PB_24))
+    (((p) >= PA_6  && (p) <= PA_31) || \
+     ((p) >= PB_0  && (p) <= PB_11) || \
+     ((p) >= PB_13 && (p) <= PB_28))
 
 // ---------------------------------------------------------------------------
 // Static singleton table
@@ -100,14 +116,13 @@ typedef struct _machine_pin_obj_t {
         .irq             = {.base = {.type = &machine_pin_irq_type}}, \
     }
 
-// Array covers indices 0..56 (PA_0..PA_24 + gap 25..31 + PB_0..PB_24).
-static machine_pin_obj_t machine_pin_obj_table[57] = {
-    AMEBA_PIN_ENTRY(PA_0),
-    AMEBA_PIN_ENTRY(PA_1),
-    AMEBA_PIN_ENTRY(PA_2),
-    AMEBA_PIN_ENTRY(PA_3),
-    AMEBA_PIN_ENTRY(PA_4),
-    AMEBA_PIN_ENTRY(PA_5),
+// Array covers indices 0..63 (PA_0..PA_31 + PB_0..PB_31).
+// Omitted (zero-initialised, IS_VALID_PINNAME also rejects):
+//   PA_0..PA_5  : SPIC0 primary pins, physically bonded to MCM Flash
+//   PB_12       : does not exist in RTL8721Dx SoC (absent from pinmux table)
+//   PB_29       : does not exist in RTL8721Dx SoC (absent from pinmux table)
+static machine_pin_obj_t machine_pin_obj_table[64] = {
+    // PA_0..PA_5 (indices 0-5): MCM Flash — zero-initialised, never reached
     AMEBA_PIN_ENTRY(PA_6),
     AMEBA_PIN_ENTRY(PA_7),
     AMEBA_PIN_ENTRY(PA_8),
@@ -127,7 +142,13 @@ static machine_pin_obj_t machine_pin_obj_table[57] = {
     AMEBA_PIN_ENTRY(PA_22),
     AMEBA_PIN_ENTRY(PA_23),
     AMEBA_PIN_ENTRY(PA_24),
-    // indices 25..31 are zero-initialised (invalid gap)
+    AMEBA_PIN_ENTRY(PA_25),
+    AMEBA_PIN_ENTRY(PA_26),
+    AMEBA_PIN_ENTRY(PA_27),
+    AMEBA_PIN_ENTRY(PA_28),
+    AMEBA_PIN_ENTRY(PA_29),
+    AMEBA_PIN_ENTRY(PA_30),
+    AMEBA_PIN_ENTRY(PA_31),
     AMEBA_PIN_ENTRY(PB_0),
     AMEBA_PIN_ENTRY(PB_1),
     AMEBA_PIN_ENTRY(PB_2),
@@ -140,7 +161,7 @@ static machine_pin_obj_t machine_pin_obj_table[57] = {
     AMEBA_PIN_ENTRY(PB_9),
     AMEBA_PIN_ENTRY(PB_10),
     AMEBA_PIN_ENTRY(PB_11),
-    AMEBA_PIN_ENTRY(PB_12),
+    // PB_12 (index 44): does not exist in SoC — zero-initialised
     AMEBA_PIN_ENTRY(PB_13),
     AMEBA_PIN_ENTRY(PB_14),
     AMEBA_PIN_ENTRY(PB_15),
@@ -153,6 +174,13 @@ static machine_pin_obj_t machine_pin_obj_table[57] = {
     AMEBA_PIN_ENTRY(PB_22),
     AMEBA_PIN_ENTRY(PB_23),
     AMEBA_PIN_ENTRY(PB_24),
+    AMEBA_PIN_ENTRY(PB_25),
+    AMEBA_PIN_ENTRY(PB_26),
+    AMEBA_PIN_ENTRY(PB_27),
+    AMEBA_PIN_ENTRY(PB_28),
+    // PB_29 (index 61): does not exist in SoC — zero-initialised
+    AMEBA_PIN_ENTRY(PB_30),
+    AMEBA_PIN_ENTRY(PB_31),
 };
 
 // HAL: extract PinName from a machine.Pin object.
@@ -162,59 +190,42 @@ mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj) {
 }
 
 // ---------------------------------------------------------------------------
-// Board pins dict (empty in skeleton; Task 3 will populate)
+// Board pins dict — PKE8721DAF board (19 I/O per board spec Table 10)
+//
+// Only pins physically present on the board headers are listed here.
+// Pins on the SoC but not brought out (PA6-PA12, PA19-PA25, PB0-PB3,
+// PB6-PB16, PB22-PB24) are accessible by table index if needed but are
+// intentionally omitted from this named dict to avoid user confusion.
+//
+// PA0-PA5 are excluded at SoC level (MCM Flash primary pins).
+// PA13-PA18 are on the board and accessible; note they share pads with
+// the on-module SPI Flash — use with care (SD card, GPIO, etc. are fine
+// when Flash is not actively being reconfigured away from SPIC0).
 // ---------------------------------------------------------------------------
 static const mp_rom_map_elem_t machine_pin_board_pins_locals_dict_table[] = {
-    { MP_ROM_QSTR(MP_QSTR_PA0),  MP_ROM_PTR(&machine_pin_obj_table[PA_0]) },
-    { MP_ROM_QSTR(MP_QSTR_PA1),  MP_ROM_PTR(&machine_pin_obj_table[PA_1]) },
-    { MP_ROM_QSTR(MP_QSTR_PA2),  MP_ROM_PTR(&machine_pin_obj_table[PA_2]) },
-    { MP_ROM_QSTR(MP_QSTR_PA3),  MP_ROM_PTR(&machine_pin_obj_table[PA_3]) },
-    { MP_ROM_QSTR(MP_QSTR_PA4),  MP_ROM_PTR(&machine_pin_obj_table[PA_4]) },
-    { MP_ROM_QSTR(MP_QSTR_PA5),  MP_ROM_PTR(&machine_pin_obj_table[PA_5]) },
-    { MP_ROM_QSTR(MP_QSTR_PA6),  MP_ROM_PTR(&machine_pin_obj_table[PA_6]) },
-    { MP_ROM_QSTR(MP_QSTR_PA7),  MP_ROM_PTR(&machine_pin_obj_table[PA_7]) },
-    { MP_ROM_QSTR(MP_QSTR_PA8),  MP_ROM_PTR(&machine_pin_obj_table[PA_8]) },
-    { MP_ROM_QSTR(MP_QSTR_PA9),  MP_ROM_PTR(&machine_pin_obj_table[PA_9]) },
-    { MP_ROM_QSTR(MP_QSTR_PA10), MP_ROM_PTR(&machine_pin_obj_table[PA_10]) },
-    { MP_ROM_QSTR(MP_QSTR_PA11), MP_ROM_PTR(&machine_pin_obj_table[PA_11]) },
-    { MP_ROM_QSTR(MP_QSTR_PA12), MP_ROM_PTR(&machine_pin_obj_table[PA_12]) },
+    // Board pin 3-6, 16-17: SPIC_FLASH alternate / SD card / RGB LED
     { MP_ROM_QSTR(MP_QSTR_PA13), MP_ROM_PTR(&machine_pin_obj_table[PA_13]) },
     { MP_ROM_QSTR(MP_QSTR_PA14), MP_ROM_PTR(&machine_pin_obj_table[PA_14]) },
     { MP_ROM_QSTR(MP_QSTR_PA15), MP_ROM_PTR(&machine_pin_obj_table[PA_15]) },
     { MP_ROM_QSTR(MP_QSTR_PA16), MP_ROM_PTR(&machine_pin_obj_table[PA_16]) },
     { MP_ROM_QSTR(MP_QSTR_PA17), MP_ROM_PTR(&machine_pin_obj_table[PA_17]) },
     { MP_ROM_QSTR(MP_QSTR_PA18), MP_ROM_PTR(&machine_pin_obj_table[PA_18]) },
-    { MP_ROM_QSTR(MP_QSTR_PA19), MP_ROM_PTR(&machine_pin_obj_table[PA_19]) },
-    { MP_ROM_QSTR(MP_QSTR_PA20), MP_ROM_PTR(&machine_pin_obj_table[PA_20]) },
-    { MP_ROM_QSTR(MP_QSTR_PA21), MP_ROM_PTR(&machine_pin_obj_table[PA_21]) },
-    { MP_ROM_QSTR(MP_QSTR_PA22), MP_ROM_PTR(&machine_pin_obj_table[PA_22]) },
-    { MP_ROM_QSTR(MP_QSTR_PA23), MP_ROM_PTR(&machine_pin_obj_table[PA_23]) },
-    { MP_ROM_QSTR(MP_QSTR_PA24), MP_ROM_PTR(&machine_pin_obj_table[PA_24]) },
-    { MP_ROM_QSTR(MP_QSTR_PB0),  MP_ROM_PTR(&machine_pin_obj_table[PB_0]) },
-    { MP_ROM_QSTR(MP_QSTR_PB1),  MP_ROM_PTR(&machine_pin_obj_table[PB_1]) },
-    { MP_ROM_QSTR(MP_QSTR_PB2),  MP_ROM_PTR(&machine_pin_obj_table[PB_2]) },
-    { MP_ROM_QSTR(MP_QSTR_PB3),  MP_ROM_PTR(&machine_pin_obj_table[PB_3]) },
+    // Board pin 9-14: general GPIO / QSPI / SD / SWD
+    { MP_ROM_QSTR(MP_QSTR_PA26), MP_ROM_PTR(&machine_pin_obj_table[PA_26]) },
+    { MP_ROM_QSTR(MP_QSTR_PA27), MP_ROM_PTR(&machine_pin_obj_table[PA_27]) },
+    { MP_ROM_QSTR(MP_QSTR_PA28), MP_ROM_PTR(&machine_pin_obj_table[PA_28]) },
+    { MP_ROM_QSTR(MP_QSTR_PA29), MP_ROM_PTR(&machine_pin_obj_table[PA_29]) },
+    { MP_ROM_QSTR(MP_QSTR_PA30), MP_ROM_PTR(&machine_pin_obj_table[PA_30]) },
+    { MP_ROM_QSTR(MP_QSTR_PA31), MP_ROM_PTR(&machine_pin_obj_table[PA_31]) },
+    // Board pin 7-8: UART LOG (shared with REPL console)
     { MP_ROM_QSTR(MP_QSTR_PB4),  MP_ROM_PTR(&machine_pin_obj_table[PB_4]) },
     { MP_ROM_QSTR(MP_QSTR_PB5),  MP_ROM_PTR(&machine_pin_obj_table[PB_5]) },
-    { MP_ROM_QSTR(MP_QSTR_PB6),  MP_ROM_PTR(&machine_pin_obj_table[PB_6]) },
-    { MP_ROM_QSTR(MP_QSTR_PB7),  MP_ROM_PTR(&machine_pin_obj_table[PB_7]) },
-    { MP_ROM_QSTR(MP_QSTR_PB8),  MP_ROM_PTR(&machine_pin_obj_table[PB_8]) },
-    { MP_ROM_QSTR(MP_QSTR_PB9),  MP_ROM_PTR(&machine_pin_obj_table[PB_9]) },
-    { MP_ROM_QSTR(MP_QSTR_PB10), MP_ROM_PTR(&machine_pin_obj_table[PB_10]) },
-    { MP_ROM_QSTR(MP_QSTR_PB11), MP_ROM_PTR(&machine_pin_obj_table[PB_11]) },
-    { MP_ROM_QSTR(MP_QSTR_PB12), MP_ROM_PTR(&machine_pin_obj_table[PB_12]) },
-    { MP_ROM_QSTR(MP_QSTR_PB13), MP_ROM_PTR(&machine_pin_obj_table[PB_13]) },
-    { MP_ROM_QSTR(MP_QSTR_PB14), MP_ROM_PTR(&machine_pin_obj_table[PB_14]) },
-    { MP_ROM_QSTR(MP_QSTR_PB15), MP_ROM_PTR(&machine_pin_obj_table[PB_15]) },
-    { MP_ROM_QSTR(MP_QSTR_PB16), MP_ROM_PTR(&machine_pin_obj_table[PB_16]) },
+    // Board pin 0-2, 15, 18, and others: general GPIO / QSPI / Touch-ADC
     { MP_ROM_QSTR(MP_QSTR_PB17), MP_ROM_PTR(&machine_pin_obj_table[PB_17]) },
     { MP_ROM_QSTR(MP_QSTR_PB18), MP_ROM_PTR(&machine_pin_obj_table[PB_18]) },
     { MP_ROM_QSTR(MP_QSTR_PB19), MP_ROM_PTR(&machine_pin_obj_table[PB_19]) },
     { MP_ROM_QSTR(MP_QSTR_PB20), MP_ROM_PTR(&machine_pin_obj_table[PB_20]) },
     { MP_ROM_QSTR(MP_QSTR_PB21), MP_ROM_PTR(&machine_pin_obj_table[PB_21]) },
-    { MP_ROM_QSTR(MP_QSTR_PB22), MP_ROM_PTR(&machine_pin_obj_table[PB_22]) },
-    { MP_ROM_QSTR(MP_QSTR_PB23), MP_ROM_PTR(&machine_pin_obj_table[PB_23]) },
-    { MP_ROM_QSTR(MP_QSTR_PB24), MP_ROM_PTR(&machine_pin_obj_table[PB_24]) },
 };
 static MP_DEFINE_CONST_DICT(machine_pin_board_pins_locals_dict,
     machine_pin_board_pins_locals_dict_table);
@@ -263,6 +274,53 @@ static machine_pin_obj_t *machine_pin_find(mp_obj_t pin_in) {
 // exception instead of silently mapping garbage to PA0.
 mp_hal_pin_obj_t mp_hal_pin_resolve(void *pin_in) {
     return machine_pin_find((mp_obj_t)pin_in)->id;
+}
+
+// ---------------------------------------------------------------------------
+// HAL pin primitives (operate on a bare PinName) used by machine.SoftI2C /
+// machine.SoftSPI / machine.time_pulse_us.  They reuse the per-pin gpio_t in
+// the singleton table so they stay consistent with machine.Pin, lazily
+// gpio_init()-ing the pad on first use.  Open-drain is emulated the same way
+// machine.Pin does it: low = drive output 0, high = release to Hi-Z input
+// (relies on an external pull-up, as I2C requires).
+// ---------------------------------------------------------------------------
+static gpio_t *mp_hal_pin_gpio(mp_hal_pin_obj_t pin) {
+    machine_pin_obj_t *self = &machine_pin_obj_table[pin];
+    if (!self->gpio_configured) {
+        gpio_init(&self->gpio, pin);
+        self->gpio_configured = true;
+    }
+    return &self->gpio;
+}
+
+void mp_hal_pin_input(mp_hal_pin_obj_t pin) {
+    gpio_dir(mp_hal_pin_gpio(pin), PIN_INPUT);
+}
+
+void mp_hal_pin_output(mp_hal_pin_obj_t pin) {
+    gpio_dir(mp_hal_pin_gpio(pin), PIN_OUTPUT);
+}
+
+void mp_hal_pin_open_drain(mp_hal_pin_obj_t pin) {
+    gpio_dir(mp_hal_pin_gpio(pin), PIN_INPUT);   // released (Hi-Z, external pull-up)
+}
+
+int mp_hal_pin_read(mp_hal_pin_obj_t pin) {
+    return gpio_read(mp_hal_pin_gpio(pin));
+}
+
+void mp_hal_pin_write(mp_hal_pin_obj_t pin, int v) {
+    gpio_write(mp_hal_pin_gpio(pin), v);
+}
+
+void mp_hal_pin_od_low(mp_hal_pin_obj_t pin) {
+    gpio_t *g = mp_hal_pin_gpio(pin);
+    gpio_dir(g, PIN_OUTPUT);
+    gpio_write(g, 0);
+}
+
+void mp_hal_pin_od_high(mp_hal_pin_obj_t pin) {
+    gpio_dir(mp_hal_pin_gpio(pin), PIN_INPUT);   // release, external pull-up drives high
 }
 
 // ---------------------------------------------------------------------------
