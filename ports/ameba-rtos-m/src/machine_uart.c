@@ -72,8 +72,9 @@ static machine_uart_obj_t machine_uart_obj[UART_ID_COUNT];
 // GC root for the RX ring buffers (the static obj array is not GC-scanned).
 MP_REGISTER_ROOT_POINTER(void *machine_uart_rxbuf[UART_ID_COUNT]);
 
-// No IRQ-trigger class constants in this phase.
-#define MICROPY_PY_MACHINE_UART_CLASS_CONSTANTS
+// Only IRQ_RX is implemented in this phase (RXIDLE/BREAK/TXIDLE left for later).
+#define MICROPY_PY_MACHINE_UART_CLASS_CONSTANTS \
+    { MP_ROM_QSTR(MP_QSTR_IRQ_RX), MP_ROM_INT(UART_IRQ_RX) },
 
 // ---- Task 2: Pin parse/validate ----
 
@@ -148,13 +149,17 @@ static void machine_uart_irq_handler(uint32_t id, SerialIrq event) {
     }
     machine_uart_obj_t *self = &machine_uart_obj[id];
     if (event == RxIrq) {
+        bool got_byte = false;
         while (serial_readable(&self->serial)) {
             int c = serial_getc(&self->serial);
             // Drop on overflow (ringbuf_put returns -1 when full).
             ringbuf_put(&self->read_buffer, (uint8_t)c);
+            got_byte = true;
         }
         #if MICROPY_PY_MACHINE_UART_IRQ
-        if (self->mp_irq_obj && (self->mp_irq_trigger & UART_IRQ_RX)) {
+        // Only fire the Python callback if this invocation actually drained
+        // a byte, in case RxIrq is ever raised with the FIFO already empty.
+        if (got_byte && self->mp_irq_obj && (self->mp_irq_trigger & UART_IRQ_RX)) {
             self->mp_irq_flags = UART_IRQ_RX;
             mp_irq_handler(self->mp_irq_obj);
         }
@@ -444,9 +449,6 @@ static void mp_machine_uart_sendbreak(machine_uart_obj_t *self) {
 // irq — register a Python callback for UART events
 // ---------------------------------------------------------------------------
 #if MICROPY_PY_MACHINE_UART_IRQ
-
-// Trigger constants (match esp32 names for cross-port compatibility).
-#define UART_IRQ_RX  (1)
 
 static const mp_irq_methods_t machine_uart_irq_methods;
 

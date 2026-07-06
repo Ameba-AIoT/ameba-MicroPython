@@ -112,6 +112,14 @@ soft_reset_exit:
     machine_i2c_deinit_all();
     #endif
 
+    #if MICROPY_PY_MACHINE_I2C_TARGET
+    // Disable I2C target IRQs before GC sweep — the static target objects
+    // survive soft reset with the SDK ISR still registered and would otherwise
+    // reference freed Python objects on the next interrupt.
+    extern void machine_i2c_target_deinit_all(void);
+    machine_i2c_target_deinit_all();
+    #endif
+
     #if MICROPY_PY_MACHINE_SPI
     // Free SPI peripherals so a re-init after soft reset starts clean (the static
     // SPI objects survive soft reset with the SDK peripheral still enabled).

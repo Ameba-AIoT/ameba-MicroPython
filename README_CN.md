@@ -146,7 +146,8 @@ True
 - 多线程：由 FreeRTOS 任务支撑的 `_thread` 模块
 - `machine` 外设 API：`Pin`、`UART`（含 IRQ / sendbreak）、`SPI`、`SoftSPI`、
   `I2C`、`SoftI2C`、`ADC`、`PWM`、`RTC`、`WDT`、`Timer`、`I2S`、`bitstream`
-  （WS2812/NeoPixel）、`lightsleep`、`deepsleep`、`wake_reason`、`bootloader`
+  （WS2812/NeoPixel，基于 LEDC 硬件 + DMA 加速）、`lightsleep`、`deepsleep`、
+  `wake_reason`、`bootloader`
 - `os.dupterm` 支持 WebREPL 及多控制台 REPL
 - `hashlib`（SHA256/SHA1/MD5）、`cryptolib`（AES）、`onewire`、`dht`
 - OTA 固件升级：`ameba.Partition` / `ameba.OTA`
@@ -231,7 +232,7 @@ MicroPython/
 | 16    | `ameba.Partition` / OTA                                        | 完成         |
 | 20    | `machine.lightsleep` / `deepsleep` / `wake_reason`             | 完成         |
 | 21    | `SoftI2C`、`SoftSPI`、`time_pulse_us`                          | 完成         |
-| 22    | `machine.bitstream`（WS2812/NeoPixel）                         | 完成         |
+| 22    | `machine.bitstream`（WS2812/NeoPixel），LEDC 硬件 DMA 后端       | 完成       |
 | 23    | `machine.UART.irq`                                             | 完成         |
 | 24    | `machine.UART.sendbreak`                                       | 完成         |
 | 27    | `machine.bootloader()`                                         | 完成         |

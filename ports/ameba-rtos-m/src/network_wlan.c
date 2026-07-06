@@ -7,6 +7,9 @@
 #include "py/runtime.h"
 #include "py/mphal.h"
 #include "py/mperrno.h"
+#ifndef MP_ENONET
+#define MP_ENONET (64) /* Machine is not on the network */
+#endif
 #include "shared/netutils/netutils.h"
 #include "extmod/modnetwork.h"
 
@@ -18,6 +21,7 @@
 #include "dhcps.h"
 
 #include "network_wlan.h"
+#include "rtk_status.h"
 
 /* ---------- Global state ------------------------------------------------- */
 
@@ -166,7 +170,17 @@ static mp_obj_t wlan_connect(size_t n_args, const mp_obj_t *args, mp_map_t *kwar
     MP_THREAD_GIL_ENTER();
 
     if (ret != RTK_SUCCESS) {
-        mp_raise_OSError(MP_ETIMEDOUT);
+        if (ret == -RTK_ERR_WIFI_CONN_SCAN_FAIL) {
+            mp_raise_OSError(MP_ENONET);
+        } else if (ret == -RTK_ERR_WIFI_CONN_INVALID_KEY) {
+            mp_raise_OSError(MP_EINVAL);
+        } else if (ret == -RTK_ERR_WIFI_CONN_AUTH_PASSWORD_WRONG ||
+                   ret == -RTK_ERR_WIFI_CONN_4WAY_PASSWORD_WRONG ||
+                   ret == -RTK_ERR_WIFI_CONN_4WAY_HANDSHAKE_FAIL) {
+            mp_raise_OSError(MP_EACCES);
+        } else {
+            mp_raise_OSError(MP_ETIMEDOUT);
+        }
     }
 
     MP_THREAD_GIL_EXIT();
@@ -176,7 +190,7 @@ static mp_obj_t wlan_connect(size_t n_args, const mp_obj_t *args, mp_map_t *kwar
     if (ret != DHCP_ADDRESS_ASSIGNED) {
         wifi_disconnect();
         lwip_clear_ip(NETIF_WLAN_STA_INDEX);
-        mp_raise_OSError(MP_ETIMEDOUT);
+        mp_raise_OSError(MP_ENONET);
     }
     return mp_const_none;
 }
@@ -212,16 +226,58 @@ static MP_DEFINE_CONST_FUN_OBJ_1(wlan_isconnected_obj, wlan_isconnected);
 static mp_obj_t wlan_status(size_t n_args, const mp_obj_t *args) {
     wlan_if_obj_t *self = MP_OBJ_TO_PTR(args[0]);
 
-    if (self->if_id == MOD_NETWORK_STA_IF) {
-        if (n_args == 2) {
-            const char *param = mp_obj_str_get_str(args[1]);
+    if (n_args == 2) {
+        const char *param = mp_obj_str_get_str(args[1]);
+        if (self->if_id == MOD_NETWORK_STA_IF) {
+            union rtw_phy_stats stats = {0};
+            wifi_get_phy_stats(STA_WLAN_INDEX, NULL, &stats);
             if (strcmp(param, "rssi") == 0) {
-                union rtw_phy_stats stats = {0};
-                wifi_get_phy_stats(STA_WLAN_INDEX, NULL, &stats);
-                return MP_OBJ_NEW_SMALL_INT((s8)stats.sta.rssi);
+                return MP_OBJ_NEW_SMALL_INT((int)stats.sta.rssi);
+            } else if (strcmp(param, "data_rssi") == 0) {
+                return MP_OBJ_NEW_SMALL_INT((int)stats.sta.data_rssi);
+            } else if (strcmp(param, "snr") == 0) {
+                return MP_OBJ_NEW_SMALL_INT((int)stats.sta.snr);
             }
-            mp_raise_ValueError(MP_ERROR_TEXT("unknown status param"));
+        } else if (strcmp(param, "stations") == 0) {
+            if (self->if_id != MOD_NETWORK_AP_IF) {
+                mp_raise_ValueError(MP_ERROR_TEXT("stations only valid for AP"));
+            }
+            struct rtw_client_list client_info = {0};
+            wifi_ap_get_connected_clients(&client_info);
+
+            uint8_t *ap_ip = lwip_get_ip(NETIF_WLAN_AP_INDEX);
+
+            mp_obj_t result = mp_obj_new_list(0, NULL);
+            for (u32 i = 0; i < client_info.count; ++i) {
+                uint8_t *mac = client_info.mac_list[i].octet;
+
+                uint8_t ip4 = dhcps_search_client_ip(pnetif_ap, mac);
+
+                union rtw_phy_stats phy = {0};
+                wifi_get_phy_stats(SOFTAP_WLAN_INDEX, mac, &phy);
+
+                mp_obj_t dict = mp_obj_new_dict(3);
+                mp_obj_dict_store(dict, MP_OBJ_NEW_QSTR(MP_QSTR_mac),
+                    mp_obj_new_bytes(mac, 6));
+                char ip_str[16];
+                if (ip4 != 0 && ap_ip != NULL) {
+                    snprintf(ip_str, sizeof(ip_str), "%u.%u.%u.%u",
+                        ap_ip[0], ap_ip[1], ap_ip[2], ip4);
+                } else {
+                    snprintf(ip_str, sizeof(ip_str), "0.0.0.0");
+                }
+                mp_obj_dict_store(dict, MP_OBJ_NEW_QSTR(MP_QSTR_ip),
+                    mp_obj_new_str(ip_str, strlen(ip_str)));
+                mp_obj_dict_store(dict, MP_OBJ_NEW_QSTR(MP_QSTR_rssi),
+                    MP_OBJ_NEW_SMALL_INT((int)phy.ap.data_rssi));
+                mp_obj_list_append(result, dict);
+            }
+            return result;
         }
+        mp_raise_ValueError(MP_ERROR_TEXT("unknown status param"));
+    }
+
+    if (self->if_id == MOD_NETWORK_STA_IF) {
         return MP_OBJ_NEW_SMALL_INT((int)mp_wifi_join_status);
     }
 
@@ -234,9 +290,45 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(wlan_status_obj, 1, 2, wlan_status);
 
 /* ---------- scan() ------------------------------------------------------- */
 
-static mp_obj_t wlan_scan(mp_obj_t self_in) {
+static mp_obj_t wlan_scan(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_ssid,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
+        { MP_QSTR_channels, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
+    };
+    mp_arg_val_t vals[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, args + 1, kwargs,
+        MP_ARRAY_SIZE(allowed_args), allowed_args, vals);
+
     struct rtw_scan_param scan_param = {0};
     scan_param.options = RTW_SCAN_ACTIVE;
+
+    // Directed SSID scan: buffer lives on the stack across the GIL exit.
+    u8 ssid_buf[RTW_ESSID_MAX_SIZE + 1] = {0};
+    if (vals[0].u_obj != mp_const_none) {
+        size_t ssid_len;
+        const char *ssid_str = mp_obj_str_get_data(vals[0].u_obj, &ssid_len);
+        if (ssid_len > RTW_ESSID_MAX_SIZE) {
+            mp_raise_ValueError(MP_ERROR_TEXT("SSID too long"));
+        }
+        memcpy(ssid_buf, ssid_str, ssid_len);
+        scan_param.ssid = ssid_buf;
+    }
+
+    // Channel list scan: build u8 array from Python list/tuple of ints.
+    u8 ch_buf[14] = {0};
+    if (vals[1].u_obj != mp_const_none) {
+        size_t ch_count;
+        mp_obj_t *ch_items;
+        mp_obj_get_array(vals[1].u_obj, &ch_count, &ch_items);
+        if (ch_count > sizeof(ch_buf)) {
+            mp_raise_ValueError(MP_ERROR_TEXT("too many channels"));
+        }
+        for (size_t i = 0; i < ch_count; ++i) {
+            ch_buf[i] = (u8)mp_obj_get_int(ch_items[i]);
+        }
+        scan_param.channel_list = ch_buf;
+        scan_param.channel_list_num = (u8)ch_count;
+    }
 
     MP_THREAD_GIL_EXIT();
     s32 ap_count = wifi_scan_networks(&scan_param, 1);
@@ -256,21 +348,22 @@ static mp_obj_t wlan_scan(mp_obj_t self_in) {
 
     for (u32 i = 0; i < count; i++) {
         struct rtw_scan_result *ap = &ap_list[i];
-        ap->ssid.val[ap->ssid.len] = '\0'; /* ensure null-terminated */
+        ap->ssid.val[ap->ssid.len] = '\0';
 
-        mp_obj_tuple_t *t = mp_obj_new_tuple(6, NULL);
+        mp_obj_tuple_t *t = mp_obj_new_tuple(7, NULL);
         t->items[0] = mp_obj_new_bytes((byte *)ap->ssid.val, ap->ssid.len);
         t->items[1] = mp_obj_new_bytes(ap->bssid.octet, sizeof(ap->bssid.octet));
         t->items[2] = MP_OBJ_NEW_SMALL_INT((int)ap->channel);
         t->items[3] = MP_OBJ_NEW_SMALL_INT((int)ap->signal_strength);
         t->items[4] = MP_OBJ_NEW_SMALL_INT((int)ap->security);
         t->items[5] = mp_obj_new_bool(ap->ssid.len == 0);
+        t->items[6] = MP_OBJ_NEW_SMALL_INT((int)ap->wireless_mode);
         mp_obj_list_append(list, MP_OBJ_FROM_PTR(t));
     }
     m_del(struct rtw_scan_result, ap_list, (size_t)ap_count);
     return list;
 }
-static MP_DEFINE_CONST_FUN_OBJ_1(wlan_scan_obj, wlan_scan);
+static MP_DEFINE_CONST_FUN_OBJ_KW(wlan_scan_obj, 1, wlan_scan);
 
 /* ---------- ifconfig() --------------------------------------------------- */
 
@@ -343,7 +436,7 @@ static mp_obj_t wlan_config(size_t n_args, const mp_obj_t *args, mp_map_t *kwarg
         const char *key = mp_obj_str_get_str(args[1]);
         struct rtw_wifi_setting setting = {0};
 
-        if (strcmp(key, "ssid") == 0) {
+        if (strcmp(key, "ssid") == 0 || strcmp(key, "essid") == 0) {
             if (self->if_id == MOD_NETWORK_AP_IF) {
                 return mp_obj_new_str(self->ap_ssid, self->ap_ssid_len);
             }
@@ -384,7 +477,7 @@ static mp_obj_t wlan_config(size_t n_args, const mp_obj_t *args, mp_map_t *kwarg
         }
         mp_obj_t k = kwargs->table[i].key;
         mp_obj_t v = kwargs->table[i].value;
-        if (k == MP_OBJ_NEW_QSTR(MP_QSTR_ssid)) {
+        if (k == MP_OBJ_NEW_QSTR(MP_QSTR_ssid) || k == MP_OBJ_NEW_QSTR(MP_QSTR_essid)) {
             size_t len;
             const char *s = mp_obj_str_get_data(v, &len);
             if (len > RTW_ESSID_MAX_SIZE) {
@@ -393,7 +486,7 @@ static mp_obj_t wlan_config(size_t n_args, const mp_obj_t *args, mp_map_t *kwarg
             memcpy(self->ap_ssid, s, len);
             self->ap_ssid[len]  = '\0';
             self->ap_ssid_len   = (uint8_t)len;
-        } else if (k == MP_OBJ_NEW_QSTR(MP_QSTR_key)) {
+        } else if (k == MP_OBJ_NEW_QSTR(MP_QSTR_key) || k == MP_OBJ_NEW_QSTR(MP_QSTR_password)) {
             size_t len;
             const char *s = mp_obj_str_get_data(v, &len);
             if (len > RTW_MAX_PSK_LEN) {
@@ -408,6 +501,10 @@ static mp_obj_t wlan_config(size_t n_args, const mp_obj_t *args, mp_map_t *kwarg
             self->ap_security   = (uint32_t)mp_obj_get_int(v);
         } else if (k == MP_OBJ_NEW_QSTR(MP_QSTR_hidden)) {
             self->ap_hidden     = mp_obj_is_true(v);
+        } else {
+            mp_raise_msg_varg(&mp_type_TypeError,
+                MP_ERROR_TEXT("unexpected keyword argument '%s'"),
+                qstr_str(MP_OBJ_QSTR_VALUE(k)));
         }
     }
     return mp_const_none;
@@ -427,6 +524,14 @@ static const mp_rom_map_elem_t wlan_if_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_ifconfig),    MP_ROM_PTR(&wlan_ifconfig_obj) },
     { MP_ROM_QSTR(MP_QSTR_config),      MP_ROM_PTR(&wlan_config_obj) },
 
+    /* Wireless mode constants (bitmask, from enum rtw_wireless_mode in wifi_api_types.h) */
+    { MP_ROM_QSTR(MP_QSTR_MODE_11B),    MP_ROM_INT(RTW_80211_B) },
+    { MP_ROM_QSTR(MP_QSTR_MODE_11G),    MP_ROM_INT(RTW_80211_G) },
+    { MP_ROM_QSTR(MP_QSTR_MODE_11N),    MP_ROM_INT(RTW_80211_N) },
+    { MP_ROM_QSTR(MP_QSTR_MODE_11A),    MP_ROM_INT(RTW_80211_A) },
+    { MP_ROM_QSTR(MP_QSTR_MODE_11AC),   MP_ROM_INT(RTW_80211_AC) },
+    { MP_ROM_QSTR(MP_QSTR_MODE_11AX),   MP_ROM_INT(RTW_80211_AX) },
+
     /* Interface constants (aliases of module-level network.STA_IF/AP_IF, mirroring
        esp32: both forms share the same value so old and new code interoperate) */
     { MP_ROM_QSTR(MP_QSTR_IF_STA),      MP_ROM_INT(MOD_NETWORK_STA_IF) },
@@ -438,6 +543,9 @@ static const mp_rom_map_elem_t wlan_if_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_SEC_WPA),         MP_ROM_INT(RTW_SECURITY_WPA_AES_PSK) },
     { MP_ROM_QSTR(MP_QSTR_SEC_WPA2),        MP_ROM_INT(RTW_SECURITY_WPA2_AES_PSK) },
     { MP_ROM_QSTR(MP_QSTR_SEC_WPA_WPA2),    MP_ROM_INT(RTW_SECURITY_WPA_WPA2_AES_PSK) },
+    { MP_ROM_QSTR(MP_QSTR_SEC_WPA3),         MP_ROM_INT(RTW_SECURITY_WPA3_AES_PSK) },
+    { MP_ROM_QSTR(MP_QSTR_SEC_WPA2_WPA3),    MP_ROM_INT(RTW_SECURITY_WPA2_WPA3_MIXED) },
+    { MP_ROM_QSTR(MP_QSTR_SEC_OWE),          MP_ROM_INT(RTW_SECURITY_WPA3_OWE) },
 
     /* Status constants (RTW_JOINSTATUS_* values) */
     { MP_ROM_QSTR(MP_QSTR_STAT_IDLE),              MP_ROM_INT(0) },  /* RTW_JOINSTATUS_UNKNOWN */

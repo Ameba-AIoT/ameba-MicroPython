@@ -54,7 +54,8 @@ typedef struct _machine_i2c_obj_t {
     bool     initialized;
 } machine_i2c_obj_t;
 
-static machine_i2c_obj_t machine_i2c_obj[I2C_ID_COUNT];
+// Non-static: machine_i2c_target.c reads .initialized for master/slave mutex.
+machine_i2c_obj_t machine_i2c_obj[I2C_ID_COUNT];
 
 // ---- Pin parse: int PinName, or string "PAx"/"PA_x"/"PBx"/"PB_x" ----
 

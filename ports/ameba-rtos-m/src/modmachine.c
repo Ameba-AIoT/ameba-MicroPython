@@ -119,13 +119,17 @@ static void mp_machine_idle(void) {
     MP_THREAD_GIL_ENTER();
 }
 
-// Stubs for MICROPY_PY_MACHINE_BARE_METAL_FUNCS — freq/sleep not yet implemented.
 static mp_obj_t mp_machine_get_freq(void) {
-    mp_raise_NotImplementedError(MP_ERROR_TEXT("machine.freq"));
+    return mp_obj_new_int(CPU_ClkGet());
 }
 
+// Setting the CPU frequency is not implemented: _CPU_ClkSet() on this SoC only
+// toggles the clock source between CLK_KM4_PLL and CLK_KM4_XTAL (there is no
+// API to pick an arbitrary frequency), and it has no confirmed caller
+// anywhere in the amebadplus SDK to show it's safe post-boot -- only
+// amebalite/amebasmart use it. Raise rather than silently no-op.
 static void mp_machine_set_freq(size_t n_args, const mp_obj_t *args) {
-    mp_raise_NotImplementedError(MP_ERROR_TEXT("machine.freq"));
+    mp_raise_NotImplementedError(MP_ERROR_TEXT("machine.freq set"));
 }
 
 // Cached wake reason for lightsleep: set after vTaskDelay returns so that

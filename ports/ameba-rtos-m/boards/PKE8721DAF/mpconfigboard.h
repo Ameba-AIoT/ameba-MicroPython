@@ -13,4 +13,11 @@
 #define MICROPY_HW_UART_TX      (31)
 #define MICROPY_HW_UART_RX      (30)
 
+// I2C0 default pins (board header pin 14=SCL, pin 13=SDA)
+#define MICROPY_HW_I2C0_SCL  (PA_26)
+#define MICROPY_HW_I2C0_SDA  (PA_27)
+// I2C1 default pins (board header pin 12=SCL, pin 11=SDA)
+#define MICROPY_HW_I2C1_SCL  (PA_28)
+#define MICROPY_HW_I2C1_SDA  (PA_29)
+
 #endif // MICROPY_INCLUDED_AMEBA_BOARDS_PKE8721DAF_MPCONFIGBOARD_H

@@ -66,6 +66,10 @@
 #define MICROPY_ENABLE_FINALISER                (1)
 #define MICROPY_READER_VFS                      (1)
 #define MICROPY_STACK_CHECK_MARGIN              (1024)
+// Budget for calling into Python directly from a hard IRQ (see mpirq.c).
+// The KM4 MSP/exception stack is only 4KB total and shared by every
+// interrupt, so this must stay well under that, not the task stack size.
+#define MICROPY_STACK_SIZE_HARD_IRQ             (2048)
 #define MICROPY_WARNINGS                        (1)
 #define MICROPY_VFS                             (1)
 #define MICROPY_ERROR_REPORTING                 (MICROPY_ERROR_REPORTING_DETAILED)
@@ -146,6 +150,11 @@
 #define MICROPY_PY_MACHINE_I2S               (1)
 #define MICROPY_PY_MACHINE_I2S_INCLUDEFILE   "src/machine_i2s.c"
 #define MICROPY_PY_MACHINE_I2S_RING_BUF      (1)
+#define MICROPY_PY_MACHINE_I2C_TARGET           (1)
+#define MICROPY_PY_MACHINE_I2C_TARGET_INCLUDEFILE \
+    "src/machine_i2c_target.c"
+#define MICROPY_PY_MACHINE_I2C_TARGET_MAX       (2)
+#define MICROPY_PY_MACHINE_I2C_TARGET_HARD_IRQ  (1)
 
 
 #define MICROPY_PY_NETWORK (1)
@@ -185,6 +194,9 @@
 // #endif
 
 typedef long mp_off_t;
+
+// Include board-specific configuration.
+#include "mpconfigboard.h"
 
 // We need to provide a declaration/definition of alloca().
 #include <alloca.h>

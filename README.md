@@ -150,8 +150,9 @@ True
 - Multi-threading: `_thread` module backed by FreeRTOS tasks
 - `machine` peripheral APIs: `Pin`, `UART` (with IRQ / sendbreak),
   `SPI`, `SoftSPI`, `I2C`, `SoftI2C`, `ADC`, `PWM`, `RTC`, `WDT`,
-  `Timer`, `I2S`, `bitstream` (WS2812/NeoPixel), `lightsleep`,
-  `deepsleep`, `wake_reason`, `bootloader`
+  `Timer`, `I2S`, `bitstream` (WS2812/NeoPixel, hardware-accelerated via
+  the LEDC peripheral with DMA), `lightsleep`, `deepsleep`,
+  `wake_reason`, `bootloader`
 - `os.dupterm` for WebREPL and multi-console REPL
 - `hashlib` (SHA256/SHA1/MD5), `cryptolib` (AES), `onewire`, `dht`
 - OTA firmware update: `ameba.Partition` / `ameba.OTA`
@@ -238,7 +239,7 @@ identifier, not the sequence).
 | 16    | `ameba.Partition` / OTA                                        | Done          |
 | 20    | `machine.lightsleep` / `deepsleep` / `wake_reason`             | Done          |
 | 21    | `SoftI2C`, `SoftSPI`, `time_pulse_us`                          | Done          |
-| 22    | `machine.bitstream` (WS2812/NeoPixel)                          | Done          |
+| 22    | `machine.bitstream` (WS2812/NeoPixel), LEDC hardware DMA backend | Done        |
 | 23    | `machine.UART.irq`                                             | Done          |
 | 24    | `machine.UART.sendbreak`                                       | Done          |
 | 27    | `machine.bootloader()`                                         | Done          |

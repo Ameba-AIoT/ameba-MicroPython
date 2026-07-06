@@ -90,7 +90,13 @@ void mp_thread_gc_others(void) {
 }
 
 mp_state_thread_t *mp_thread_get_state(void) {
-    return pvTaskGetThreadLocalStoragePointer(NULL, 1);
+    // A hard IRQ can fire while a non-MicroPython FreeRTOS task (e.g. the
+    // WiFi or LWIP task) is current, which has never had this TLS slot set
+    // and returns NULL here. Fall back to the main thread's state so
+    // gc_lock()/mp_call_function_1() called from such an IRQ have a valid
+    // struct to operate on instead of dereferencing NULL.
+    mp_state_thread_t *state = pvTaskGetThreadLocalStoragePointer(NULL, 1);
+    return state != NULL ? state : &mp_state_ctx.thread;
 }
 
 void mp_thread_set_state(mp_state_thread_t *state) {
