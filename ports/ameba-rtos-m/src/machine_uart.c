@@ -9,10 +9,14 @@
 
 #include "serial_api.h"
 #include "PinNames.h"
+#include "ameba_uart.h"
 #include "shared/runtime/mpirq.h"
 
-// UART IRQ trigger constant (port-defined, matches esp32 naming).
-#define UART_IRQ_RX  (1)
+// UART IRQ trigger constants (port-defined, matches esp32 naming/values).
+#define UART_IRQ_RX      (1 << 0)
+#define UART_IRQ_BREAK   (1 << 1)
+#define UART_IRQ_RXIDLE  (1 << 2)
+#define UART_IRQ_TXIDLE  (1 << 3)
 
 #define UART_ID_COUNT (2)
 
@@ -72,9 +76,11 @@ static machine_uart_obj_t machine_uart_obj[UART_ID_COUNT];
 // GC root for the RX ring buffers (the static obj array is not GC-scanned).
 MP_REGISTER_ROOT_POINTER(void *machine_uart_rxbuf[UART_ID_COUNT]);
 
-// Only IRQ_RX is implemented in this phase (RXIDLE/BREAK/TXIDLE left for later).
 #define MICROPY_PY_MACHINE_UART_CLASS_CONSTANTS \
-    { MP_ROM_QSTR(MP_QSTR_IRQ_RX), MP_ROM_INT(UART_IRQ_RX) },
+    { MP_ROM_QSTR(MP_QSTR_IRQ_RX), MP_ROM_INT(UART_IRQ_RX) }, \
+    { MP_ROM_QSTR(MP_QSTR_IRQ_BREAK), MP_ROM_INT(UART_IRQ_BREAK) }, \
+    { MP_ROM_QSTR(MP_QSTR_IRQ_RXIDLE), MP_ROM_INT(UART_IRQ_RXIDLE) }, \
+    { MP_ROM_QSTR(MP_QSTR_IRQ_TXIDLE), MP_ROM_INT(UART_IRQ_TXIDLE) },
 
 // ---- Task 2: Pin parse/validate ----
 
@@ -142,12 +148,23 @@ static void mp_machine_uart_print(const mp_print_t *print, mp_obj_t self_in, mp_
 
 // ---- Task 3: RX ISR ----
 
-// RX interrupt: drain HW FIFO into the ring buffer. ISR context — no mp_* calls.
+// self->serial.uart_idx indexes the SDK's global UART_DEV_TABLE, which is how
+// serial_api.c itself finds the register block -- see UART_DEV_TABLE usage in
+// serial_init()/serial_irq_set() etc.
+static inline UART_TypeDef *machine_uart_regs(machine_uart_obj_t *self) {
+    return UART_DEV_TABLE[self->serial.uart_idx].UARTx;
+}
+
+// RX/TX interrupt: drain HW FIFO into the ring buffer and detect IRQ_RX /
+// IRQ_RXIDLE / IRQ_BREAK / IRQ_TXIDLE. ISR context — no mp_* calls.
 static void machine_uart_irq_handler(uint32_t id, SerialIrq event) {
     if (id >= UART_ID_COUNT) {
         return;
     }
     machine_uart_obj_t *self = &machine_uart_obj[id];
+    #if MICROPY_PY_MACHINE_UART_IRQ
+    uint16_t flags = 0;
+    #endif
     if (event == RxIrq) {
         bool got_byte = false;
         while (serial_readable(&self->serial)) {
@@ -157,14 +174,45 @@ static void machine_uart_irq_handler(uint32_t id, SerialIrq event) {
             got_byte = true;
         }
         #if MICROPY_PY_MACHINE_UART_IRQ
-        // Only fire the Python callback if this invocation actually drained
-        // a byte, in case RxIrq is ever raised with the FIFO already empty.
-        if (got_byte && self->mp_irq_obj && (self->mp_irq_trigger & UART_IRQ_RX)) {
-            self->mp_irq_flags = UART_IRQ_RX;
-            mp_irq_handler(self->mp_irq_obj);
+        // serial_irq_set(RxIrq, 1) enables RUART_BIT_ERBI | RUART_BIT_ELSI |
+        // RUART_BIT_ETOI together at the hardware level (see serial_api.c),
+        // but the mbed serial_api layer only ever forwards this as a plain
+        // RxIrq callback -- it never tells us *why* (new byte vs. receiver
+        // timeout vs. break). Read the line-status register ourselves to
+        // recover that: RUART_BIT_TIMEOUT_INT (ETOI) means the line went
+        // idle after some bytes (IRQ_RXIDLE); RUART_BIT_BREAK_INT (part of
+        // ELSI) means a break condition was seen (IRQ_BREAK) -- ISR-context
+        // side note: this is a second LSR read within the same hardware
+        // interrupt; that's safe here because the SDK's own uart_irqhandler()
+        // (serial_api.c) works off a copy of LSR taken once at ISR entry, not
+        // a fresh register read, so it isn't affected by what we clear here.
+        uint32_t lsr = UART_LineStatusGet(machine_uart_regs(self));
+        if (got_byte && (self->mp_irq_trigger & UART_IRQ_RX)) {
+            flags |= UART_IRQ_RX;
+        }
+        if ((lsr & RUART_BIT_TIMEOUT_INT) && (self->mp_irq_trigger & UART_IRQ_RXIDLE)) {
+            flags |= UART_IRQ_RXIDLE;
+        }
+        if ((lsr & RUART_BIT_BREAK_INT) && (self->mp_irq_trigger & UART_IRQ_BREAK)) {
+            flags |= UART_IRQ_BREAK;
+        }
+        #endif
+    } else if (event == TxIrq) {
+        #if MICROPY_PY_MACHINE_UART_IRQ
+        // serial_api.c's uart_txdone_callback() already disabled RUART_BIT_ETBEI
+        // (one-shot) before calling us -- see mp_machine_uart_write(), which is
+        // what re-arms it for the next write.
+        if (self->mp_irq_trigger & UART_IRQ_TXIDLE) {
+            flags |= UART_IRQ_TXIDLE;
         }
         #endif
     }
+    #if MICROPY_PY_MACHINE_UART_IRQ
+    if (flags && self->mp_irq_obj) {
+        self->mp_irq_flags = flags;
+        mp_irq_handler(self->mp_irq_obj);
+    }
+    #endif
 }
 
 // ---- Task 2 + Task 3: init_helper (Task 3 RX-integrated version) ----
@@ -399,6 +447,15 @@ static mp_uint_t mp_machine_uart_write(mp_obj_t self_in, const void *buf_in, mp_
         }
         serial_putc(&self->serial, src[i]);
     }
+    #if MICROPY_PY_MACHINE_UART_IRQ
+    // Arm a one-shot TX-FIFO-empty interrupt so IRQ_TXIDLE fires once this
+    // write's bytes have actually left the FIFO (see machine_uart_irq_handler;
+    // the SDK auto-disables this interrupt again right before invoking us).
+    // Only bother if the user is actually listening for it.
+    if (size > 0 && (self->mp_irq_trigger & UART_IRQ_TXIDLE)) {
+        serial_irq_set(&self->serial, TxIrq, 1);
+    }
+    #endif
     return size;
 }
 

@@ -1,27 +1,39 @@
 // SPDX-License-Identifier: MIT
-// machine.PWM port implementation for ameba-rtos (AmebaDplus).
+// machine.PWM port implementation for ameba-rtos.
 //
 // INCLUDEFILE — included by extmod/machine_pwm.c via
 // MICROPY_PY_MACHINE_PWM_INCLUDEFILE.  Defines machine_pwm_obj_t and all
 // mp_machine_pwm_* functions required by the extmod framework.
 //
-// Hardware: 8 PWM channels share TIMER8, so ALL channels run at the SAME
-// frequency.  Each channel has an independent pulse width (duty cycle).
+// AmebaDplus:  8 channels share a single TIMER8 (40 MHz).  All channels run
+//              at the SAME frequency; each has an independent duty cycle.
+// AmebaGreen2: 8 channels spread across TIM4-TIM5 (4 channels each, 40 MHz).
+//              Same shared-frequency constraint applies because the prescaler
+//              global in the SDK's pwmout_api.c is not per-timer.
 // The SDK's pwmout_init/pwmout_free manage pinmux and timer gating.
 
 #include "pwmout_api.h"
 #include "pwmout_ex_api.h"   // pwmout_start, pwmout_stop
 #include "ameba_soc.h"       // Pinmux_Config, PINMUX_FUNCTION_GPIO
+#if defined(CONFIG_AMEBAGREEN2)
+#include "ameba_pwmtimer.h"  // TIM_CCInitTypeDef, RTIM_CCxInit, TIMx[]
+#endif
 
-// Defined (non-static) in the SDK's pwmout_api.c.  TIMER8 feeds the PWM
-// block from a 40 MHz clock through this shared prescaler.  The SDK's
-// pwmout_period_us() bumps this global when a long period overflows the
-// 16-bit ARR, but it (a) never writes the hardware PSC register and
-// (b) never resets the global back to 0 for short periods.  That leaves the
-// global and the hardware permanently out of sync after the first low-freq
-// call, corrupting every subsequent frequency.  We own prescaler in
-// mp_machine_pwm_freq_set() instead and keep both in lock-step.
+// The SDK's pwmout_api.c owns a global `prescaler` (shared across all PWM
+// channels / timers).  pwmout_period_us() bumps it when a long period
+// overflows the 16-bit ARR, but never writes the hardware PSC register and
+// never resets it for short periods.  We own the prescaler in
+// mp_machine_pwm_freq_set() and keep global + hardware in lock-step.
 extern u8 prescaler;
+
+#if defined(CONFIG_AMEBAGREEN2)
+// Green2 PWM uses TIM4-TIM7 (indices 4-7).  timer_start[] tracks which
+// timers have been initialised; used here to know which need a prescaler
+// hardware update when the shared prescaler changes.
+#define GREEN2_PWM_TIMER_BASE  (4)
+#define GREEN2_PWM_TIMER_COUNT (2)   // we map 8 channels across TIM4 and TIM5
+extern u8 timer_start[];             // from SDK pwmout_api.c
+#endif
 
 #define PWM_CHANNEL_MAX    (8)
 #define PWM_TIMER_CLK_MHZ  (40)
@@ -136,9 +148,34 @@ static mp_obj_t mp_machine_pwm_make_new(const mp_obj_type_t *type,
         self->pwm_idx = (uint8_t)channel;
         self->pin = pin;
 
-        // Init PWM: pwm_idx MUST be set before pwmout_init.
+        // Init PWM: channel fields MUST be set before pwmout_init.
+        // AmebaDplus:  single TIM8, pwm_idx = 0-7.
+        // AmebaGreen2: TIM4 for channels 0-3, TIM5 for channels 4-7;
+        //              pwmtimer_idx = timer number (4 or 5),
+        //              pwm_idx      = channel within that timer (0-3).
+        #if defined(CONFIG_AMEBAGREEN2)
+        self->pwm.pwmtimer_idx = GREEN2_PWM_TIMER_BASE + self->pwm_idx / 4;
+        self->pwm.pwm_idx      = self->pwm_idx % 4;
+        #else
         self->pwm.pwm_idx = self->pwm_idx;
+        #endif
         pwmout_init(&self->pwm, (PinName)self->pin);
+
+        #if defined(CONFIG_AMEBAGREEN2)
+        // pwmout_init does not call RTIM_CCxInit, so CCRx[n] may remain in
+        // hardware-reset state (bit 27 = InputCapture mode).  The raw SDK
+        // example (raw_pwm) always calls RTIM_CCxInit after RTIM_TimeBaseInit;
+        // replicate that here so the channel is correctly configured as PWM
+        // output before any duty-cycle writes.
+        {
+            TIM_CCInitTypeDef cc;
+            RTIM_CCStructInit(&cc);
+            cc.TIM_OCPulse = 0;
+            RTIM_CCxInit(TIMx[self->pwm.pwmtimer_idx], &cc, self->pwm.pwm_idx);
+            RTIM_CCxCmd(TIMx[self->pwm.pwmtimer_idx], self->pwm.pwm_idx, TIM_CCx_Enable);
+        }
+        #endif
+
         self->active = true;
     }
 
@@ -203,7 +240,18 @@ static void mp_machine_pwm_freq_set(machine_pwm_obj_t *self, mp_int_t freq) {
     }
     if (new_prescaler != (uint32_t)prescaler) {
         prescaler = (u8)new_prescaler;
+        // Push the new prescaler to every initialised PWM timer so that the
+        // hardware and the `prescaler` global stay in lock-step.
+        #if defined(CONFIG_AMEBAGREEN2)
+        for (int ti = 0; ti < GREEN2_PWM_TIMER_COUNT; ti++) {
+            if (timer_start[ti]) {
+                RTIM_PrescalerConfig(TIMx[GREEN2_PWM_TIMER_BASE + ti],
+                    new_prescaler, TIM_PSCReloadMode_Immediate);
+            }
+        }
+        #else
         RTIM_PrescalerConfig(TIM8, new_prescaler, TIM_PSCReloadMode_Immediate);
+        #endif
     }
 
     // All 8 PWM channels share TIMER8 (same period).  Changing the period

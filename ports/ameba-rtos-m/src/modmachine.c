@@ -76,10 +76,11 @@ static mp_obj_t mp_machine_unique_id(void) {
 
 static mp_int_t mp_machine_reset_cause(void) {
     // BOOT_Reason() reads REG_LSYS_BOOT_REASON_SW & 0x7FF (ameba_reset.h).
-    // Check SOFT first: machine.reset() sets KM4_SYS_RST, which must not be
-    // misclassified as HARD_RESET.
+    // Check SOFT first: machine.reset() sets a CPU-triggered system-reset bit
+    // (IS_SYS_RESET -- named per physical core on AmebaDplus, per TrustZone
+    // world on AmebaGreen2), which must not be misclassified as HARD_RESET.
     u32 reason = BOOT_Reason();
-    if (reason & (AON_BIT_RSTF_KM4_SYS | AON_BIT_RSTF_KM0_SYS)) {
+    if (IS_SYS_RESET(reason)) {
         return MP_SOFT_RESET;
     }
     if (IS_WDG_RESET(reason)) {

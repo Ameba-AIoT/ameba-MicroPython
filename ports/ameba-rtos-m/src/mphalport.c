@@ -96,8 +96,16 @@ mp_uint_t mp_hal_ticks_ms(void) {
     return rtos_time_get_current_system_time_ms_64bit();
 }
 
+// The debug timer (DTIM) is a free-running 1 MHz counter, clocked at boot by
+// the bootloader (APBPeriph_DTIM is enabled in bootloader_km4tz.c alongside
+// LOGUART/thermal/USB) -- no init needed on our side.  Unlike
+// rtos_time_get_current_system_time_us() (which combines the FreeRTOS tick
+// count with a SysTick sub-tick read inside a critical section), this is a
+// single register read with no critical section and no dependency on the
+// RTOS tick, giving 1 us resolution unaffected by SysTick-related latency.
+// Already used by the SDK's own SD card / Ethernet drivers for timeouts.
 mp_uint_t mp_hal_ticks_us(void) {
-    return rtos_time_get_current_system_time_us();
+    return DTimestamp_Get();
 }
 // DWT cycle counter for sub-microsecond timing (machine.bitstream / neopixel).
 // RTL8721Dx KM4 runs at 200 MHz → 1 cycle = 5 ns, well within the ±150 ns
@@ -217,8 +225,19 @@ void rtk_loguart_init(void) {
     /* Register Log Uart Callback function */
 	InterruptRegister((IRQ_FUN) log_uart_irq, UART_LOG_IRQ, (u32)NULL, INT_PRI_LOWEST);
 	InterruptEn(UART_LOG_IRQ, INT_PRI_LOWEST);
+	// AmebaDplus has two physical cores (KM4/KM0); AmebaGreen2 has one core
+	// (KM4) with TrustZone secure/non-secure worlds instead, so the mask
+	// bits are named after worlds (AP/NP) rather than cores. The SDK only
+	// runs app/example code in whichever world is the WHC WiFi host (see
+	// c_ENABLE_EXAMPLE in cmake/common.cmake); with the SDK's default WHC
+	// role assignment that's km4tz (AP), so this port targets km4tz here,
+	// not km4ns.
+	#if defined(CONFIG_AMEBAGREEN2)
+	LOGUART_INTCoreConfig(LOGUART_DEV, LOGUART_BIT_INTR_MASK_AP, ENABLE);
+	#else
 	LOGUART_INTCoreConfig(LOGUART_DEV, LOGUART_BIT_INTR_MASK_KM4, ENABLE);
 	LOGUART_INTCoreConfig(LOGUART_DEV, LOGUART_BIT_INTR_MASK_KM0, DISABLE);
+	#endif
 }
 
 void mp_hal_get_random(size_t n, void *buf) {

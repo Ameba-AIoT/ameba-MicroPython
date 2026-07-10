@@ -1,0 +1,83 @@
+# Pin.board named pins for EV8711FLM (RTL8711FLM / AmebaGreen2).
+# Format: board_name,cpu_name  (see boards/make-pins.py).
+#
+# Source: Realtek UG1002 EV721FL0 EVB User Guide v1.2, Table 3-1 (headers
+# J20/J21/J22/J23/J26) plus J5/J6 (LOGUART).  Only pins physically routed to a
+# header AND usable as GPIO are listed.
+#
+# Deliberately excluded (documented as NOT usable as GPIO on this board):
+#   PA_0, PA_1      -- power pins (LDOM_OUT / VAH_RTC), cannot be GPIO
+#   PC_2 .. PC_7    -- connected to on-board flash, cannot be GPIO
+#   PC_8            -- exists on the SoC but not routed to any header
+# Note: several listed pins are "default NC" on the EVB (need a 0-ohm resistor
+# rework per Table 3-2 before use, e.g. PA_3..PA_5, PA_18..PA_21, PA_27, PA_28,
+# PB_19, PB_24..PB_31, PC_0, PC_1); they are still valid GPIO after the rework.
+# PA_2 (LOG RX) / PB_20 (LOG TX) back the REPL console -- reconfigure with care.
+
+# --- PORT A ---
+PA2,PA_2
+PA3,PA_3
+PA4,PA_4
+PA5,PA_5
+PA6,PA_6
+PA7,PA_7
+PA8,PA_8
+PA9,PA_9
+PA10,PA_10
+PA11,PA_11
+PA12,PA_12
+PA13,PA_13
+PA14,PA_14
+PA15,PA_15
+PA16,PA_16
+PA17,PA_17
+PA18,PA_18
+PA19,PA_19
+PA20,PA_20
+PA21,PA_21
+PA22,PA_22
+PA23,PA_23
+PA24,PA_24
+PA25,PA_25
+PA26,PA_26
+PA27,PA_27
+PA28,PA_28
+PA29,PA_29
+PA30,PA_30
+PA31,PA_31
+
+# --- PORT B ---
+PB0,PB_0
+PB3,PB_3
+PB4,PB_4
+PB5,PB_5
+PB6,PB_6
+PB7,PB_7
+PB8,PB_8
+PB9,PB_9
+PB10,PB_10
+PB11,PB_11
+PB12,PB_12
+PB13,PB_13
+PB14,PB_14
+PB15,PB_15
+PB16,PB_16
+PB17,PB_17
+PB18,PB_18
+PB19,PB_19
+PB20,PB_20
+PB21,PB_21
+PB22,PB_22
+PB23,PB_23
+PB24,PB_24
+PB25,PB_25
+PB26,PB_26
+PB27,PB_27
+PB28,PB_28
+PB29,PB_29
+PB30,PB_30
+PB31,PB_31
+
+# --- PORT C ---
+PC0,PC_0
+PC1,PC_1

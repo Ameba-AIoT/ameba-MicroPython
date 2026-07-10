@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// machine.I2S port implementation for ameba-rtos (AmebaDplus).
+// machine.I2S port implementation for ameba-rtos.
 //
 // INCLUDEFILE — included by extmod/machine_i2s.c via
 // MICROPY_PY_MACHINE_I2S_INCLUDEFILE.
@@ -30,7 +30,8 @@
 // The ring buffer couples this to the extmod framework's blocking and
 // non-blocking copy helpers exactly as the other I2S ports do.
 //
-// Two I2S peripherals (SPORT0/SPORT1).  Supports TX/RX, 16/32 bit,
+// Two I2S peripherals (SPORT0/SPORT1) on AmebaDplus, one (SPORT0) on other
+// SoCs (see the CONFIG_AMEBADPLUS guards below).  Supports TX/RX, 16/32 bit,
 // MONO/STEREO, 8k-96k sample rates.
 
 #include <stdlib.h>
@@ -42,7 +43,13 @@
 // Forward declarations of SDK functions not in the public header.
 extern void RCC_PeriphClockSource_SPORT(AUDIO_SPORT_TypeDef *SPx, u32 source);
 
+// AmebaDplus has two SPORT peripherals (SPORT0/SPORT1); other SoCs (e.g.
+// AmebaGreen2) have only SPORT0, see the CONFIG_AMEBADPLUS guards below.
+#if defined(CONFIG_AMEBADPLUS)
 #define I2S_ID_COUNT    (2)
+#else
+#define I2S_ID_COUNT    (1)
+#endif
 
 // DMA buffer = ring buffer / 4
 #define I2S_DMA_BUF_DIV  (4)
@@ -311,35 +318,31 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
         mp_raise_ValueError(MP_ERROR_TEXT("ibuf too small"));
     }
 
-    uint32_t sp_mono = (self->format == MONO) ? SP_CH_MONO : SP_CH_STEREO;
     bool is_tx = (self->mode == MICROPY_PY_MACHINE_I2S_CONSTANT_TX);
 
-    // Word length (the count of valid data bits per slot) always tracks the
-    // requested sample size, in both directions.  A previous version hardcoded
-    // it to 32 bits, which made bits=16 emit malformed audio: the 32-bit
-    // serializer swallowed two consecutive 16-bit samples into one slot
-    // (verified on a logic analyzer — a 16-bit L=0x1234,R=0x5678 stream came
-    // out as a repeated 0x56781234 with no channel separation).
-    uint32_t sp_wl = (self->bits == 16) ? SP_TXWL_16 : SP_TXWL_32;
+    // TX uses the user-requested mono/stereo.  RX must always run in STEREO
+    // mode so the SPORT generates 2 slots per I2S frame, giving 8 DMA bytes
+    // per frame.  fill_appbuf_from_ringbuf() always consumes exactly 8 ring
+    // buffer bytes per iteration (I2S_RX_FRAME_SIZE_IN_BYTES); if MONO were
+    // passed through, the SPORT would generate only 4 bytes/frame, the ring
+    // buffer would fill at half speed, and readinto() would take 2× longer.
+    // The frame_map discards the R-channel bytes for MONO configurations.
+    uint32_t sp_mono = (is_tx && self->format == MONO) ? SP_CH_MONO : SP_CH_STEREO;
 
-    // Channel length (the slot width in bit-clocks) must be chosen PER
-    // DIRECTION, because TX and RX run through two different extmod code paths:
-    //
-    //   TX  copy_appbuf_to_ringbuf() is a raw byte passthrough — no frame map.
-    //       The wire format is therefore exactly the SPORT slot, so a 16-bit
-    //       sample needs a 16-bit slot (verified on a logic analyzer: 16-bit
-    //       gives a 512kHz BCLK with clean L/R separation; a 32-bit slot would
-    //       double the clock and misalign the 2-byte-per-sample passthrough).
-    //
-    //   RX  fill_appbuf_from_ringbuf() ALWAYS runs the bytes through
-    //       i2s_frame_map over a fixed 8-byte (I2S_RX_FRAME_SIZE_IN_BYTES)
-    //       frame, and the 16-bit maps assume each sample occupies 4 bytes:
-    //       2 data + 2 padding to be discarded (the upstream STM32/ESP32
-    //       convention of sampling into a 32-bit container).  So RX 16-bit
-    //       needs a 32-bit slot (word=16, channel=32) to produce those padding
-    //       bytes; a 16-bit slot would deliver only 2 bytes per sample and the
-    //       frame map would read past the frame and misalign every channel.
-    //       32-bit RX already uses a 32-bit slot, so it is unaffected.
+    // TX word length tracks the requested sample size (verified on a logic
+    // analyzer: bits=16 with WL_16 gives 512 kHz BCLK and clean L/R
+    // separation; WL_32 would double the clock and merge two 16-bit samples
+    // into one slot).  RX must always use WL_32 so the SPORT DMA captures 4
+    // bytes per slot (the full 32-bit container).  WL_16 makes the hardware
+    // write only 2 bytes per slot; fill_appbuf_from_ringbuf() then waits 2×
+    // longer for data and the frame_map -1 discard entries consume real sample
+    // bytes from the next slot instead of padding from the current one.
+    uint32_t sp_wl = (is_tx && self->bits == 16) ? SP_TXWL_16 : SP_TXWL_32;
+
+    // Channel length (slot width in bit-clocks) is direction-specific:
+    //   TX: match the word length so the BCLK rate is correct for the sample size.
+    //   RX: always 32-bit channel so the BCLK is 2×32×SR and the DMA slot is
+    //       4 bytes wide, matching the 32-bit word length forced above.
     uint32_t sp_cl;
     if (is_tx) {
         sp_cl = (self->bits == 16) ? SP_TXCL_16 : SP_TXCL_32;
@@ -358,9 +361,13 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
     // cold boot these clocks happen to already be on, but after a deinit +
     // soft reset they are gated again — which made a second I2S construct
     // crash in AUDIO_SP_Reset.
+    #if defined(CONFIG_AMEBADPLUS)
     RCC_PeriphClockCmd((sport_dev == 0) ? APBPeriph_SPORT0 : APBPeriph_SPORT1,
                        (sport_dev == 0) ? APBPeriph_SPORT0_CLOCK : APBPeriph_SPORT1_CLOCK,
                        ENABLE);
+    #else
+    RCC_PeriphClockCmd(APBPeriph_SPORT, APBPeriph_SPORT_CLOCK, ENABLE);
+    #endif
     RCC_PeriphClockCmd(APBPeriph_AC, APBPeriph_AC_CLOCK, ENABLE);
 
     // Enable the audio-codec digital IP and its I2S0 sub-block.  The SPORT
@@ -373,7 +380,11 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
     AUDIO_CODEC_SetI2SIP(I2S0, ENABLE);
 
     // Set SPORT clock source to 40MHz XTAL (no PLL needed).
+    #if defined(CONFIG_AMEBADPLUS)
     RCC_PeriphClockSource_SPORT(sport_dev == 0 ? AUDIO_SPORT0_DEV : AUDIO_SPORT1_DEV, CKSL_I2S_XTAL40M);
+    #else
+    RCC_PeriphClockSource_SPORT(AUDIO_SPORT0_DEV, CKSL_I2S_XTAL40M);
+    #endif
 
     // Reset SPORT peripheral before configuring.
     AUDIO_SP_Reset(sport_dev);
@@ -397,6 +408,7 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
     // the idle DOUT3 lane to the pad, so the data pin read a static 0 V on a
     // multimeter even though the serializer (verified via internal loopback)
     // was emitting the correct bytes.
+    #if defined(CONFIG_AMEBADPLUS)
     uint32_t pf_bclk = (sport_dev == 0) ? PINMUX_FUNCTION_I2S0_BCLK : PINMUX_FUNCTION_I2S1_BCLK;
     uint32_t pf_ws   = (sport_dev == 0) ? PINMUX_FUNCTION_I2S0_WS   : PINMUX_FUNCTION_I2S1_WS;
     uint32_t pf_data;
@@ -405,6 +417,11 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
     } else {
         pf_data = (sport_dev == 0) ? PINMUX_FUNCTION_I2S0_DIO0 : PINMUX_FUNCTION_I2S1_DIO0;
     }
+    #else
+    uint32_t pf_bclk = PINMUX_FUNCTION_I2S0_BCLK;
+    uint32_t pf_ws   = PINMUX_FUNCTION_I2S0_WS;
+    uint32_t pf_data = is_tx ? PINMUX_FUNCTION_I2S0_DIO3 : PINMUX_FUNCTION_I2S0_DIO0;
+    #endif
     Pinmux_Config((u8)self->sck, pf_bclk);
     Pinmux_Config((u8)self->ws,  pf_ws);
     Pinmux_Config((u8)self->sd,  pf_data);

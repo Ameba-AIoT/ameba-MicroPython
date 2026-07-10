@@ -88,26 +88,48 @@ static u32 i2c_target_irq_handler(void *data) {
         I2C_ClearINT(I2Cx, I2C_BIT_R_TX_ABRT);
     }
 
-    // RX_FULL: master is writing a byte to us.
-    if (intr & I2C_BIT_R_RX_FULL) {
-        if (self->state != STATE_WRITING) {
-            machine_i2c_target_data_addr_match(d, false);
-        }
-        machine_i2c_target_data_write_request(self, d);
-        self->state = STATE_WRITING;
-    }
-
-    // RD_REQ: master is requesting a byte from us.
-    if (intr & I2C_BIT_R_RD_REQ) {
-        I2C_ClearINT(I2Cx, I2C_BIT_R_RD_REQ);
-        if (self->state != STATE_READING) {
+    // RX_DONE must be handled BEFORE STOP_DET below.  On this DesignWare I2C
+    // IP, RX_DONE (master NACKed the last transmitted byte -- the read is
+    // ending) arrives in the SAME interrupt poll as the STOP_DET that ends
+    // that same read (confirmed on hardware: intr=0x00000280 = STOP_DET|
+    // RX_DONE together for a 1-byte readfrom()).  If STOP_DET ran first, it
+    // would already reset self->state to STATE_IDLE, and this RX_DONE would
+    // then be misread as the START of a brand new transaction (spurious
+    // extra IRQ_ADDR_MATCH_READ + IRQ_READ_REQ pair appearing AFTER
+    // IRQ_END_READ).  Handling RX_DONE first keeps state == STATE_READING
+    // for both this call and STOP_DET's finalisation right after it, so
+    // read_request() is correctly treated as a continuation of the read that
+    // is about to end, not a new one.
+    //
+    // RX_DONE fires as an EXTRA event beyond the real RD_REQ transfers: for a
+    // 1-byte readfrom(), RD_REQ fires once (poll 1) and RX_DONE fires once
+    // more (poll 2, alongside STOP_DET) -- matching upstream's own reference
+    // behaviour (see rp2's port, which ORs RD_REQ and RX_DONE into the same
+    // handler) and tests/extmod_hardware/machine_i2c_target.py's
+    // TestIRQ.test_read (2 IRQ_READ_REQ for a 1-byte readfrom()) and
+    // TestMemory's test_write_read_read (mem_addr advances one past the
+    // last byte actually delivered).  Call the same read_request() path so
+    // both the event count and the mem_addr bookkeeping match.
+    if (intr & I2C_BIT_R_RX_DONE) {
+        I2C_ClearINT(I2Cx, I2C_BIT_R_RX_DONE);
+        bool was_reading = (self->state == STATE_READING);
+        self->state = STATE_READING;
+        if (!was_reading) {
             machine_i2c_target_data_addr_match(d, true);
         }
         machine_i2c_target_data_read_request(self, d);
-        self->state = STATE_READING;
     }
 
-    // STOP_DET: end of transaction.
+    // STOP_DET must be handled BEFORE RX_FULL/RD_REQ below.  On this
+    // DesignWare I2C IP, a trailing STOP_DET for one sub-transaction (e.g.
+    // the address-byte write phase of readfrom_mem()) can arrive in the SAME
+    // interrupt poll as the RD_REQ/RX_FULL that starts the NEXT
+    // sub-transaction (e.g. the repeated-START read phase).  Handling it
+    // first finalises the old transaction (using the state that was live
+    // before this call) so the new transaction's RX_FULL/RD_REQ below sees a
+    // clean STATE_IDLE and fires exactly one address-match event, instead of
+    // the new state being clobbered back to IDLE after it was just set.
+    //
     // Guard against STOP arriving before the last RX byte is drained
     // (same race as rp2's stop_pending pattern — DesignWare I2C IP).
     if (intr & I2C_BIT_R_STOP_DET) {
@@ -115,9 +137,87 @@ static u32 i2c_target_irq_handler(void *data) {
         if (I2C_CheckFlagState(I2Cx, I2C_BIT_RFNE)) {
             self->stop_pending = true;
         } else {
+            // A zero-length write probe (e.g. SoftI2C.scan()'s address-only
+            // START+address+STOP with no data byte) never raises RX_FULL, so
+            // d->state is still STATE_IDLE here and no address-match event
+            // would otherwise be recorded -- tests/extmod_hardware/
+            // machine_i2c_target.py's test_scan cases expect one.
+            //
+            // STOP_DET itself can't be used to detect this (confirmed on
+            // hardware: it fires for EVERY address on the bus, not just ours
+            // -- 112/112 during a full scan()).  LP_WAKE_1 (bit 12 of
+            // IC_RAW_INTR_STAT), documented as "Set when address SAR matches
+            // with address sending on I2C BUS" (RTL8721Dx UM1000 v5.0,
+            // ss 20.4.14), is the real per-address signal: confirmed on
+            // hardware to fire on exactly 1 of 112 probes during a full
+            // scan() -- precisely the one matching our own address.  Despite
+            // the LP_WAKE ("low power wake") name suggesting a sleep-only
+            // feature, it fires unconditionally, awake or not.
+            //
+            // Read-to-clear (IC_CLR_ADDR_MATCH) on every pass so a stale set
+            // bit from an earlier probe can't be misread on a later one.
+            uint32_t raw = I2C_GetRawINT(I2Cx);
+            bool addr_matched = (raw & I2C_BIT_LP_WAKE_1) != 0;
+            (void)I2Cx->IC_CLR_ADDR_MATCH;
+            if (d->state == STATE_IDLE && addr_matched) {
+                machine_i2c_target_data_addr_match(d, false);
+            }
             machine_i2c_target_data_restart_or_stop(d);
             self->state = STATE_IDLE;
         }
+    }
+
+    // RX_FULL: master is writing a byte to us.
+    if (intr & I2C_BIT_R_RX_FULL) {
+        // RX_FULL is LEVEL-triggered on this DesignWare IP: it stays
+        // asserted as long as the FIFO holds more bytes than IC_RX_TL, and
+        // re-fires the ISR immediately on return if never cleared. Mask it
+        // unconditionally here, before calling the event handlers below;
+        // extmod's write_request() (called just below) always ends up
+        // calling mp_machine_i2c_target_read_bytes() at least once -- either
+        // automatically (mem_buf set, or mem_buf==NULL with no Python
+        // handler registered) or via the user's own i2c_target.readinto()
+        // inside their IRQ_WRITE_REQ handler -- and that function
+        // unconditionally re-enables RX_FULL once it runs. The only way RX_FULL
+        // stays masked past this ISR call is a handler that deliberately
+        // defers the read to outside the IRQ (a documented, valid usage --
+        // see tests/extmod_hardware/machine_i2c_target.py TestPolling), which
+        // is exactly the case that must stay masked to avoid an infinite
+        // storm (confirmed on hardware: 300k+ re-entries in under 6 seconds,
+        // unresponsive to Ctrl-C, before this masking existed). A handler
+        // that drains one byte per call but can't keep up with the master
+        // (confirmed on hardware: a 5-byte writeto_mem() with a 400us-per-byte
+        // handler leaves 4 more bytes queued by the time the first drains)
+        // gets re-enabled by that same readinto() call and the level-
+        // triggered interrupt immediately re-fires for the next byte instead
+        // of losing it. Same pattern as rp2's ports/rp2/machine_i2c_target.c
+        // i2c_target_handler()/mp_machine_i2c_target_read_bytes().
+        I2C_INTConfig(I2Cx, I2C_BIT_M_RX_FULL, DISABLE);
+
+        // Set state BEFORE calling the event handlers below: handle_event()
+        // runs the user's Python IRQ callback, which may sleep (e.g. to force
+        // clock stretching).  If the hardware re-latches RX_FULL for the next
+        // byte during that window, the re-entrant ISR call must already see
+        // STATE_WRITING, or it will wrongly re-fire IRQ_ADDR_MATCH_WRITE.
+        bool was_writing = (self->state == STATE_WRITING);
+        self->state = STATE_WRITING;
+        if (!was_writing) {
+            machine_i2c_target_data_addr_match(d, false);
+        }
+        machine_i2c_target_data_write_request(self, d);
+    }
+
+    // RD_REQ: master is requesting a byte from us.
+    if (intr & I2C_BIT_R_RD_REQ) {
+        I2C_ClearINT(I2Cx, I2C_BIT_R_RD_REQ);
+        // Same early-state-update reasoning as the RX_FULL branch above,
+        // for IRQ_ADDR_MATCH_READ re-entrancy during the RD_REQ event handler.
+        bool was_reading = (self->state == STATE_READING);
+        self->state = STATE_READING;
+        if (!was_reading) {
+            machine_i2c_target_data_addr_match(d, true);
+        }
+        machine_i2c_target_data_read_request(self, d);
     }
 
     self->irq_active = false;
@@ -144,13 +244,19 @@ static inline void mp_machine_i2c_target_event_callback(machine_i2c_target_irq_o
     mp_irq_handler(&irq->base);
 }
 
-// Read bytes from hardware RX FIFO — non-blocking, called from ISR context.
+// Read bytes from hardware RX FIFO — non-blocking, called both from ISR
+// context (auto-discard path) and directly from I2CTarget.readinto() (the
+// caller-drains-later path — see the RX_FULL storm-prevention comment above).
 static size_t mp_machine_i2c_target_read_bytes(machine_i2c_target_obj_t *self,
     size_t len, uint8_t *buf) {
     size_t i = 0;
     while (i < len && I2C_CheckFlagState(self->I2Cx, I2C_BIT_RFNE)) {
         buf[i++] = (uint8_t)(self->I2Cx->IC_DATA_CMD & 0xFF);
     }
+    // Unconditionally re-enable, matching rp2. Safe even if the FIFO still
+    // holds more bytes: RX_FULL is level-triggered, so the interrupt simply
+    // reasserts immediately and the ISR runs again for the next byte.
+    I2C_INTConfig(self->I2Cx, I2C_BIT_M_RX_FULL, ENABLE);
     return i;
 }
 
@@ -265,7 +371,7 @@ static mp_obj_t mp_machine_i2c_target_make_new(const mp_obj_type_t *type,
     // Enable all relevant slave interrupts once at construction; extmod's
     // handle_event() does the trigger filtering in software.
     I2C_INTConfig(self->I2Cx,
-        I2C_BIT_M_RX_FULL | I2C_BIT_M_RD_REQ |
+        I2C_BIT_M_RX_FULL | I2C_BIT_M_RD_REQ | I2C_BIT_M_RX_DONE |
         I2C_BIT_M_STOP_DET | I2C_BIT_M_TX_ABRT, ENABLE);
 
     // Register and enable hardware IRQ (same pattern as machine_uart.c).
@@ -301,7 +407,7 @@ static void mp_machine_i2c_target_deinit(machine_i2c_target_obj_t *self) {
     InterruptDis(I2C_DEV_TABLE[self->i2c_id].IrqNum);
     InterruptUnRegister(I2C_DEV_TABLE[self->i2c_id].IrqNum);
     I2C_INTConfig(self->I2Cx,
-        I2C_BIT_M_RX_FULL | I2C_BIT_M_RD_REQ |
+        I2C_BIT_M_RX_FULL | I2C_BIT_M_RD_REQ | I2C_BIT_M_RX_DONE |
         I2C_BIT_M_STOP_DET | I2C_BIT_M_TX_ABRT, DISABLE);
     i2c_slave_mode(&self->i2c, 0);
     Pinmux_Config((u8)self->scl, PINMUX_FUNCTION_GPIO);

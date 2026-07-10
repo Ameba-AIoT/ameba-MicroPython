@@ -1,0 +1,23 @@
+# Pin.board named pins for PKE8721DAF (RTL8721DAF / AmebaDplus).
+# Format: board_name,cpu_name  (see boards/make-pins.py).
+# Only pins brought out to the board headers are listed (19 I/O per board spec
+# Table 10).  PA13..PA18 share pads with the on-module SPI Flash; use with care.
+PA13,PA_13
+PA14,PA_14
+PA15,PA_15
+PA16,PA_16
+PA17,PA_17
+PA18,PA_18
+PA26,PA_26
+PA27,PA_27
+PA28,PA_28
+PA29,PA_29
+PA30,PA_30
+PA31,PA_31
+PB4,PB_4
+PB5,PB_5
+PB17,PB_17
+PB18,PB_18
+PB19,PB_19
+PB20,PB_20
+PB21,PB_21

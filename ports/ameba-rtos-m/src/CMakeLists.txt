@@ -24,6 +24,21 @@ if(EXISTS ${MICROPY_BOARD_DIR}/mpconfigboard.cmake)
     include(${MICROPY_BOARD_DIR}/mpconfigboard.cmake)
 endif()
 
+# Generate the Pin.board named-pin table for the selected board from its
+# pins.csv.  Runs at configure time (the ameba framework reconfigures on every
+# build) so machine_pin.c can #include the result. Output goes to the build
+# dir, which is already on the private include path below.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} ${MICROPY_PORT_DIR}/boards/make-pins.py
+        --csv ${MICROPY_BOARD_DIR}/pins.csv
+        --output ${CMAKE_BINARY_DIR}/pins_board.h
+    RESULT_VARIABLE _gen_pins_result
+)
+if(NOT _gen_pins_result EQUAL 0)
+    message(FATAL_ERROR "make-pins.py failed for board ${MICROPY_BOARD}")
+endif()
+
 include(${MICROPY_DIR}/py/py.cmake)
 include(${MICROPY_DIR}/extmod/extmod.cmake)
 
@@ -111,6 +126,11 @@ set(public_libraries)               #public libraries(files), NOTE: linked with 
 
 #ameba_list_append(public_includes ${c_COMPONENT_DIR}/at_cmd)
 
+# Global (not just our own target's private_definitions) so this also reaches
+# the mbedtls library's own compilation -- see mbedtls_user_config.h for why.
+ameba_list_append(public_includes ${CMAKE_CURRENT_SOURCE_DIR})
+ameba_list_append(public_definitions MBEDTLS_USER_CONFIG_FILE=\"mbedtls_user_config.h\")
+
 # Component public part, user config end(DO NOT remove this line)
 #------------------------------------------------------------------#
 
@@ -145,7 +165,7 @@ ameba_list_append(private_sources
     modameba.c
     help.c
     mpthreadport.c
-    mp_wificfg.c
+    ${MICROPY_BOARD_DIR}/mp_wificfg.c
     modsocket.c
     network_wlan.c
     network_common.c
@@ -155,6 +175,7 @@ ameba_list_append(private_sources
     machine_i2c.c
     machine_spi.c
     machine_rtc.c
+    fatfs_port.c
     machine_bitstream.c
     ${MICROPY_DIR}/drivers/bus/softspi.c
     ${MICROPY_DIR}/drivers/dht/dht.c
@@ -283,6 +304,18 @@ macro(ameba_gather_target_properties targ)
    endif()
 endmacro()
 ameba_gather_target_properties(${c_MCU_PROJ_CONFIG})
+
+# mkrules.cmake's QSTR-extraction step (below) only reads INCLUDE_DIRECTORIES
+# and COMPILE_DEFINITIONS from MICROPY_TARGET -- it never looks at
+# COMPILE_OPTIONS, so the SoC's -mthumb/-march/-mcmse flags never reach the
+# `gcc -E` invocation that scans source files for qstrs. GCC then falls back
+# to its own built-in default architecture, which defines __ARM_FEATURE_DSP.
+# On AmebaDplus this was harmless (__DSP_PRESENT really is 1 there), but
+# AmebaGreen2's __DSP_PRESENT is 0, so the same gap trips core_cm55.h's
+# "#error ... devices without DSP extensions" mismatch check during qstr
+# scanning -- which then cascades into every real compile failing too, since
+# they all depend on the qstr header the failed scan never produced.
+list(APPEND MICROPY_CPP_FLAGS_EXTRA ${c_GLOBAL_MCU_COMPILE_C_OPTIONS})
 
 include(${MICROPY_DIR}/py/mkrules.cmake)
 

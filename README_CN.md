@@ -21,8 +21,9 @@
 `ports/ameba-rtos-m/`，让你能直接在 Ameba 芯片上用 Python 编写 Wi-Fi、网络、
 文件系统和外设应用——通过串口连接即可获得交互式 REPL，无需重新编译固件。
 
-主要目标平台是 **AmebaDplus (RTL8721Dx)**，后续将通过切换 `soc_info.json`
-支持 AmebaLite、AmebaGreen2 和 AmebaSmart。
+主要目标平台是 **AmebaDplus (RTL8721Dx)**。**AmebaGreen2
+(RTL8721F/RTL8711F)** 也在积极移植中（见 EV8711FLM 板），后续将通过切换
+`soc_info.json` 支持 AmebaLite 和 AmebaSmart。
 
 本移植处于积极开发阶段，部分 `machine` 外设模块仍在开发中。当前状态见
 [路线图](#-路线图)。
@@ -145,9 +146,9 @@ True
   等已预编译进固件
 - 多线程：由 FreeRTOS 任务支撑的 `_thread` 模块
 - `machine` 外设 API：`Pin`、`UART`（含 IRQ / sendbreak）、`SPI`、`SoftSPI`、
-  `I2C`、`SoftI2C`、`ADC`、`PWM`、`RTC`、`WDT`、`Timer`、`I2S`、`bitstream`
-  （WS2812/NeoPixel，基于 LEDC 硬件 + DMA 加速）、`lightsleep`、`deepsleep`、
-  `wake_reason`、`bootloader`
+  `I2C`、`SoftI2C`、`I2CTarget`、`ADC`、`PWM`、`RTC`、`WDT`、`Timer`、`I2S`、
+  `bitstream`（WS2812/NeoPixel，基于 LEDC 硬件 + DMA 加速）、`lightsleep`、
+  `deepsleep`、`wake_reason`、`bootloader`
 - `os.dupterm` 支持 WebREPL 及多控制台 REPL
 - `hashlib`（SHA256/SHA1/MD5）、`cryptolib`（AES）、`onewire`、`dht`
 - OTA 固件升级：`ameba.Partition` / `ameba.OTA`
@@ -157,8 +158,8 @@ True
 | SoC                              | 状态     |
 |----------------------------------|----------|
 | AmebaDplus (RTL8721Dx)           | 进行中   |
+| AmebaGreen2 (RTL8721F / RTL8711F) | 移植中  |
 | AmebaLite (RTL8720E / RTL8710E)  | 计划中   |
-| AmebaGreen2 (RTL8721F)           | 计划中   |
 | AmebaSmart (RTL8730E)            | 计划中   |
 
 ## 🏗️ 架构
@@ -237,6 +238,7 @@ MicroPython/
 | 24    | `machine.UART.sendbreak`                                       | 完成         |
 | 27    | `machine.bootloader()`                                         | 完成         |
 | 28    | `os.dupterm` / WebREPL                                         | 完成         |
+| 31    | `machine.I2CTarget`（I2C 从机）                                 | 完成         |
 | 14    | `machine.SDCard`                                               | 计划中       |
 | 15    | USB CDC REPL                                                   | 计划中       |
 | 12    | Bluetooth BLE（GAP / GATT）                                    | 计划中       |

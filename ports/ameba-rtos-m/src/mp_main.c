@@ -60,6 +60,10 @@ void mp_main(void * para) {
     #if MICROPY_PY_THREAD
     mp_thread_init(mpTaskStack, MICROPY_TASK_STACK_SIZE / sizeof(portSTACK_TYPE));
     #endif
+    // Build the machine.Pin object table for this SoC's pin banks (once; pin
+    // objects/state then persist across soft reset, as before).
+    extern void machine_pin_table_init(void);
+    machine_pin_table_init();
     extern void rtk_loguart_init(void);
     rtk_loguart_init();
     extern void mp_hal_dwt_init(void);
@@ -169,7 +173,12 @@ void gc_collect(void) {
 }
 
 #if MICROPY_GC_SPLIT_HEAP_AUTO
-extern const size_t xHeapStructSize;
+// heap_5.c's per-block header (BlockLink_t: a next-pointer + a size_t) is
+// private (static xHeapStructSize) to that file and can't be extern'd, so
+// reproduce its own alignment formula here instead -- same struct layout and
+// portBYTE_ALIGNMENT on every SoC this port targets.
+#define GC_HEAP_STRUCT_SIZE \
+    ((sizeof(void *) + sizeof(size_t) + (portBYTE_ALIGNMENT - 1)) & ~(size_t)portBYTE_ALIGNMENT_MASK)
 // The largest new region that is available to become Python heap is the largest
 // free block in the FreeRTOS heap.
 size_t gc_get_max_new_split(void) {
@@ -180,7 +189,7 @@ size_t gc_get_max_new_split(void) {
     vPortGetHeapStats(&xHeapStats);
     // Reserve 16 KB for Wi-Fi/lwIP so GC expansion cannot exhaust the system heap.
     const size_t WIFI_LWIP_RESERVE = 16 * 1024;
-    size_t available = xHeapStats.xSizeOfLargestFreeBlockInBytes - xHeapStructSize;
+    size_t available = xHeapStats.xSizeOfLargestFreeBlockInBytes - GC_HEAP_STRUCT_SIZE;
     return available > WIFI_LWIP_RESERVE ? available - WIFI_LWIP_RESERVE : 0;
 }
 
@@ -205,11 +214,28 @@ MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
 
 #endif
 
+#if defined(CONFIG_AMEBAGREEN2)
+// Override the SDK's default malloc-failed hook. The ROM-provided default
+// (see PROVIDE(vApplicationMallocFailedHook = ...) in the SoC's
+// ameba_rom_symbol_*.ld) loops forever on OOM instead of returning, which
+// turns any allocation failure (e.g. xTaskCreate() under heap pressure)
+// into a silent, unrecoverable hang. Log and return so callers see a normal
+// NULL/failure instead.
+//
+// AmebaDplus is excluded: its heap_5.c already strongly defines this
+// function (with a different, size_t-taking signature), so providing our
+// own here would be a duplicate-symbol link error there.
+void vApplicationMallocFailedHook(void) {
+    mp_printf(MP_PYTHON_PRINTER, "vApplicationMallocFailedHook: malloc failed, free heap %u\n",
+        (unsigned)xPortGetFreeHeapSize());
+}
+#endif
+
 void app_pre_example(void) {
 }
 
 void app_example(void) {
-    if (NULL == xTaskCreateStatic(mp_main, "mp_main", MICROPY_TASK_STACK_SIZE / sizeof(portSTACK_TYPE), NULL, 4, mpTaskStack, &mpTaskTCB)) {
+    if (NULL == xTaskCreateStatic(mp_main, "mp_main", MICROPY_TASK_STACK_SIZE / sizeof(portSTACK_TYPE), NULL, 1, mpTaskStack, &mpTaskTCB)) {
         mp_printf(MP_PYTHON_PRINTER, "mp_main create failed\n");
     }
 }

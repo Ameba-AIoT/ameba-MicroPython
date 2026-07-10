@@ -22,8 +22,10 @@ This is a port of the [MicroPython](https://micropython.org) project to the
 peripheral applications in Python directly on Ameba chips — connect over
 serial and get an interactive REPL, no firmware recompilation needed.
 
-The primary target is the **AmebaDplus (RTL8721Dx)**, with AmebaLite,
-AmebaGreen2 and AmebaSmart to follow via `soc_info.json` switching.
+The primary target is the **AmebaDplus (RTL8721Dx)**. **AmebaGreen2
+(RTL8721F/RTL8711F)** is also actively being ported (see the EV8711FLM
+board), with AmebaLite and AmebaSmart to follow via `soc_info.json`
+switching.
 
 This is an active development port; some `machine` peripheral modules are
 still in progress.  See the [Roadmap](#-roadmap) for current status.
@@ -149,9 +151,9 @@ True
   pre-compiled into the firmware
 - Multi-threading: `_thread` module backed by FreeRTOS tasks
 - `machine` peripheral APIs: `Pin`, `UART` (with IRQ / sendbreak),
-  `SPI`, `SoftSPI`, `I2C`, `SoftI2C`, `ADC`, `PWM`, `RTC`, `WDT`,
-  `Timer`, `I2S`, `bitstream` (WS2812/NeoPixel, hardware-accelerated via
-  the LEDC peripheral with DMA), `lightsleep`, `deepsleep`,
+  `SPI`, `SoftSPI`, `I2C`, `SoftI2C`, `I2CTarget`, `ADC`, `PWM`, `RTC`,
+  `WDT`, `Timer`, `I2S`, `bitstream` (WS2812/NeoPixel, hardware-accelerated
+  via the LEDC peripheral with DMA), `lightsleep`, `deepsleep`,
   `wake_reason`, `bootloader`
 - `os.dupterm` for WebREPL and multi-console REPL
 - `hashlib` (SHA256/SHA1/MD5), `cryptolib` (AES), `onewire`, `dht`
@@ -162,8 +164,8 @@ True
 | SoC                                    | Status        |
 |----------------------------------------|---------------|
 | AmebaDplus (RTL8721Dx)                 | Active        |
+| AmebaGreen2 (RTL8721F / RTL8711F)      | In progress   |
 | AmebaLite (RTL8720E / RTL8710E)        | Planned       |
-| AmebaGreen2 (RTL8721F)                 | Planned       |
 | AmebaSmart (RTL8730E)                  | Planned       |
 
 ## 🏗️ Architecture
@@ -244,6 +246,7 @@ identifier, not the sequence).
 | 24    | `machine.UART.sendbreak`                                       | Done          |
 | 27    | `machine.bootloader()`                                         | Done          |
 | 28    | `os.dupterm` / WebREPL                                         | Done          |
+| 31    | `machine.I2CTarget` (I2C slave)                                | Done          |
 | 14    | `machine.SDCard`                                               | Planned       |
 | 15    | USB CDC REPL                                                   | Planned       |
 | 12    | Bluetooth BLE (GAP / GATT)                                     | Planned       |

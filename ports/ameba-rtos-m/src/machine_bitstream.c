@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT
-// machine.bitstream for ameba-rtos (AmebaDplus / RTL8721Dx).
+// machine.bitstream for ameba-rtos.
 //
-// Two-tier dispatch:
+// Two-tier dispatch, AmebaDplus (RTL8721Dx) only:
 //   Path A: LEDC hardware DMA mode      (len % 3 == 0, LED count in range, GDMA channel available)
 //   Path C: software SysTick bit-bang   (everything else, incl. no GDMA channel free)
+//
+// Other SoCs (e.g. AmebaGreen2) always use Path C: their LEDC-equivalent
+// block uses a completely different, incompatible API (see the
+// CONFIG_AMEBADPLUS guard below) that hasn't been ported yet.
 //
 // LEDC is a WS2812-shaped hardware block: LEDC_DATA_REG masks to 24 valid
 // bits (LEDC_MASK_DATA = 0x00FFFFFF) with no register to change that width.
@@ -86,10 +90,18 @@ static void bitstream_software_fallback(mp_hal_pin_obj_t pin, uint32_t *timing_n
 
     // Direct GPIO_DR access, bypassing the HAL chain (~400 ns on LSYS APB4).
     // PinName: bit[5] = port (0 = A, 1 = B), bits[4:0] = pin number.
+    // GPIO_TypeDef.PORT is declared as an array (PORT[1]) on AmebaDplus but as
+    // a plain struct member on AmebaGreen2 -- same field, different C shape.
     uint32_t bit_mask = (1u << (pin & 0x1Fu));
+    #if defined(CONFIG_AMEBADPLUS)
     volatile uint32_t *gpio_dr = ((pin >> 5) == 0)
         ? &GPIOA_BASE->PORT[0].GPIO_DR
         : &GPIOB_BASE->PORT[0].GPIO_DR;
+    #else
+    volatile uint32_t *gpio_dr = ((pin >> 5) == 0)
+        ? &GPIOA_BASE->PORT.GPIO_DR
+        : &GPIOB_BASE->PORT.GPIO_DR;
+    #endif
 
     mp_uint_t atomic_state = MICROPY_BEGIN_ATOMIC_SECTION();
 
@@ -108,6 +120,13 @@ static void bitstream_software_fallback(mp_hal_pin_obj_t pin, uint32_t *timing_n
 
     MICROPY_END_ATOMIC_SECTION(atomic_state);
 }
+
+// Path A (LEDC hardware) is AmebaDplus-specific. AmebaGreen2 has a different,
+// incompatible LEDC block (ameba_ledc_pro.h -- no overlap at all with the
+// LEDC_Init()/LEDC_InitTypeDef/LEDC_DMA_MODE API used below) that would need
+// its own from-scratch port, not a drop-in adaptation. Until/unless that's
+// done, other SoCs always use the software fallback (Path C).
+#if defined(CONFIG_AMEBADPLUS)
 
 // ---------------------------------------------------------------------------
 // Shared helper: pack a 3*n_leds-byte buffer into n_leds cache-line-aligned
@@ -255,6 +274,8 @@ static void bitstream_ledc_dma(uint32_t *staging, size_t n_leds, u8 ch) {
     }
 }
 
+#endif // CONFIG_AMEBADPLUS
+
 // ---------------------------------------------------------------------------
 // Entry point (upstream extmod contract: synchronous, blocks until sent).
 // ---------------------------------------------------------------------------
@@ -265,6 +286,7 @@ void machine_bitstream_high_low(mp_hal_pin_obj_t pin, uint32_t *timing_ns,
         return;
     }
 
+    #if defined(CONFIG_AMEBADPLUS)
     size_t n_leds = len / 3;
     if ((len % 3) == 0 && n_leds > 0 && n_leds <= BITSTREAM_LEDC_MAX_LEDS) {
         // Grab the GDMA channel before packing: no point copying the buffer
@@ -286,6 +308,7 @@ void machine_bitstream_high_low(mp_hal_pin_obj_t pin, uint32_t *timing_ns,
         }
         // No GDMA channel free -- fall through to the software path below.
     }
+    #endif // CONFIG_AMEBADPLUS
 
     bitstream_software_fallback(pin, timing_ns, buf, len);
 }

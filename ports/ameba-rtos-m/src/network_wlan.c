@@ -45,8 +45,8 @@ wlan_if_obj_t wlan_ap_obj = {
 
 static mp_obj_t wlan_make_new(const mp_obj_type_t *type,
     size_t n_args, size_t n_kw, const mp_obj_t *args) {
-    mp_arg_check_num(n_args, n_kw, 1, 1, false);
-    int if_id = mp_obj_get_int(args[0]);
+    mp_arg_check_num(n_args, n_kw, 0, 1, false);
+    int if_id = (n_args > 0) ? mp_obj_get_int(args[0]) : MOD_NETWORK_STA_IF;
     if (if_id == MOD_NETWORK_STA_IF) {
         return MP_OBJ_FROM_PTR(&wlan_sta_obj);
     } else if (if_id == MOD_NETWORK_AP_IF) {
@@ -56,6 +56,44 @@ static mp_obj_t wlan_make_new(const mp_obj_type_t *type,
 }
 
 /* ---------- active() ----------------------------------------------------- */
+
+/* Actually starts broadcasting: wifi_start_ap() + DHCP server. Requires
+ * self->ap_ssid_len != 0. Called from wlan_active(True) when the SSID is
+ * already configured, and from wlan_config() when a new SSID arrives while
+ * active(True) is already pending (see ap_active_requested below) --
+ * Realtek's wifi_start_ap() takes the full SSID/config in one call, unlike
+ * esp-idf/cyw43 which let active-up and SSID-config happen independently in
+ * either order, so we have to track the "wants active" intent ourselves. */
+static void wlan_ap_start(wlan_if_obj_t *self) {
+    /* Idempotent cleanup */
+    dhcps_deinit(pnetif_ap);
+    lwip_clear_ip(SOFTAP_WLAN_INDEX);
+    wifi_stop_ap();
+
+    struct rtw_softap_info ap_cfg = {0};
+    memcpy(ap_cfg.ssid.val, self->ap_ssid, self->ap_ssid_len);
+    ap_cfg.ssid.len      = self->ap_ssid_len;
+    ap_cfg.security_type = self->ap_security;
+    if (self->ap_security == RTW_SECURITY_OPEN) {
+        ap_cfg.password     = NULL;
+        ap_cfg.password_len = 0;
+    } else {
+        ap_cfg.password     = (u8 *)self->ap_key;
+        ap_cfg.password_len = self->ap_key_len;
+    }
+    ap_cfg.channel       = self->ap_channel;
+    ap_cfg.hidden_ssid   = self->ap_hidden ? 1 : 0;
+
+    MP_THREAD_GIL_EXIT();
+    s32 ap_ret = wifi_start_ap(&ap_cfg);
+    MP_THREAD_GIL_ENTER();
+    if (ap_ret != RTK_SUCCESS) {
+        mp_raise_OSError(MP_EIO);
+    }
+    lwip_alloc_ip(NETIF_WLAN_AP_INDEX);
+    dhcps_init(pnetif_ap);
+    dhcps_start(pnetif_ap);
+}
 
 static mp_obj_t wlan_active(size_t n_args, const mp_obj_t *args) {
     wlan_if_obj_t *self = MP_OBJ_TO_PTR(args[0]);
@@ -74,38 +112,17 @@ static mp_obj_t wlan_active(size_t n_args, const mp_obj_t *args) {
     }
 
     if (mp_obj_is_true(args[1])) {
+        self->ap_active_requested = true;
+        /* If the SSID isn't configured yet, defer the actual wifi_start_ap()
+         * call to wlan_config() -- this supports both call orders:
+         * config() then active(True) (starts here), and active(True) then
+         * config() (starts once config() supplies the SSID). */
         if (self->ap_ssid_len == 0) {
-            mp_raise_ValueError(MP_ERROR_TEXT("AP SSID not set"));
+            return mp_const_none;
         }
-        /* Idempotent cleanup */
-        dhcps_deinit(pnetif_ap);
-        lwip_clear_ip(SOFTAP_WLAN_INDEX);
-        wifi_stop_ap();
-
-        struct rtw_softap_info ap_cfg = {0};
-        memcpy(ap_cfg.ssid.val, self->ap_ssid, self->ap_ssid_len);
-        ap_cfg.ssid.len      = self->ap_ssid_len;
-        ap_cfg.security_type = self->ap_security;
-        if (self->ap_security == RTW_SECURITY_OPEN) {
-            ap_cfg.password     = NULL;
-            ap_cfg.password_len = 0;
-        } else {
-            ap_cfg.password     = (u8 *)self->ap_key;
-            ap_cfg.password_len = self->ap_key_len;
-        }
-        ap_cfg.channel       = self->ap_channel;
-        ap_cfg.hidden_ssid   = self->ap_hidden ? 1 : 0;
-
-        MP_THREAD_GIL_EXIT();
-        s32 ap_ret = wifi_start_ap(&ap_cfg);
-        MP_THREAD_GIL_ENTER();
-        if (ap_ret != RTK_SUCCESS) {
-            mp_raise_OSError(MP_EIO);
-        }
-        lwip_alloc_ip(NETIF_WLAN_AP_INDEX);
-        dhcps_init(pnetif_ap);
-        dhcps_start(pnetif_ap);
+        wlan_ap_start(self);
     } else {
+        self->ap_active_requested = false;
         dhcps_deinit(pnetif_ap);
         lwip_clear_ip(SOFTAP_WLAN_INDEX);
         wifi_stop_ap();
@@ -506,6 +523,12 @@ static mp_obj_t wlan_config(size_t n_args, const mp_obj_t *args, mp_map_t *kwarg
                 MP_ERROR_TEXT("unexpected keyword argument '%s'"),
                 qstr_str(MP_OBJ_QSTR_VALUE(k)));
         }
+    }
+    /* active(True) was called before the SSID was known -- now that config()
+     * has supplied one, actually start broadcasting. */
+    if (self->ap_active_requested && self->ap_ssid_len != 0 &&
+        !wifi_is_running(SOFTAP_WLAN_INDEX)) {
+        wlan_ap_start(self);
     }
     return mp_const_none;
 }

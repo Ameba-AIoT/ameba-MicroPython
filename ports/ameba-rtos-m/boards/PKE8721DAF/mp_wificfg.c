@@ -1,0 +1,161 @@
+#ifdef CONFIG_FULLMAC
+#include <rtw_cfg80211_fullmac.h>
+#else
+#include "platform_autoconf.h"
+#include <wifi_api.h>
+#include "rtw_skbuff.h"
+#endif
+
+#include "ameba_wificfg_common.h"
+#include "wifi_api_event.h"
+#include "network_wlan.h"
+
+static void mp_wifi_join_status_handler(u8 *evt_info) {
+    struct rtw_event_join_status_info *info =
+        (struct rtw_event_join_status_info *)evt_info;
+    mp_wifi_join_status = (uint8_t)info->status;
+}
+
+/* Override SDK __weak symbol — no __weak qualifier here */
+struct rtw_event_hdl_func_t event_external_hdl[] = {
+    {RTW_EVENT_JOIN_STATUS, mp_wifi_join_status_handler},
+};
+u16 array_len_of_event_external_hdl =
+    sizeof(event_external_hdl) / sizeof(struct rtw_event_hdl_func_t);
+
+/* Override SDK __weak symbol — no __weak qualifier here */
+void wifi_set_user_config(void)
+{
+	int skb_num_np_rsvd;
+	_memset(&wifi_user_config, 0, sizeof(struct wifi_user_conf));
+
+	/* below items for user config, for details, see wifi_user_conf in ameba_wificfg_common.h */
+	wifi_user_config.concurrent_enabled = 1;
+	wifi_user_config.softap_addr_offset_idx = 1;
+	wifi_user_config.fast_reconnect_en = 0;
+	wifi_user_config.auto_reconnect_en = 0;
+	wifi_user_config.auto_reconnect_count = 10;
+	wifi_user_config.auto_reconnect_interval = 5;
+	wifi_user_config.no_beacon_disconnect_time = 9;  /* unit 2s, default 18s */
+
+#if (defined(CONFIG_WHC_INTF_SDIO) || defined(CONFIG_WHC_INTF_USB))
+	skb_num_np_rsvd = 10; /*4 for rx_ring_buffer + 2 for mgnt trx + 4 for spido rx_ring_buffer */
+	wifi_user_config.skb_num_np = 20;  /* skb_num_np should >= rx_ampdu_num + skb_num_np_rsvd */
+	wifi_user_config.skb_num_ap = 0;
+	wifi_user_config.rx_ampdu_num = 8;
+#elif defined(CONFIG_WHC_INTF_SPI)
+	skb_num_np_rsvd = 7; /*4 for rx_ring_buffer + 2 for mgnt trx + 1 for spi rx_dma_buffer */
+	wifi_user_config.skb_num_np = 14;  /* skb_num_np should >= rx_ampdu_num + skb_num_np_rsvd */
+	wifi_user_config.skb_num_ap = 0;
+	wifi_user_config.rx_ampdu_num = 0;
+#elif defined(CONFIG_WHC_INTF_UART)
+	skb_num_np_rsvd = 7; /*4 for rx_ring_buffer + 2 for mgnt trx + 1 for spi rx_dma_buffer */
+	wifi_user_config.skb_num_np = 14;  /* skb_num_np should >= rx_ampdu_num + skb_num_np_rsvd */
+	wifi_user_config.skb_num_ap = 0;
+	wifi_user_config.rx_ampdu_num = 4;
+#else
+	skb_num_np_rsvd = 6; /*4 for rx_ring_buffer + 2 for mgnt trx*/
+#ifdef CONFIG_HIGH_TP_TEST /*enable high tp in make menuconfig*/
+	wifi_user_config.skb_num_np = 14;
+	wifi_user_config.skb_num_ap = 5;
+	wifi_user_config.rx_ampdu_num = 8;
+#else
+	wifi_user_config.skb_num_np = 10; /* skb_num_np should >= rx_ampdu_num + skb_num_np_rsvd */
+	wifi_user_config.skb_num_ap = 4;
+	wifi_user_config.rx_ampdu_num = 4;
+#endif
+	wifi_user_config.tx_ampdu_num = 20; /* 0/1: equivalent to wifi_user_config.ampdu_tx_enable = 0, Otherwise: max aggregation number, up to 0x3F*/
+#if WIFI_LOGO_CERTIFICATION
+	wifi_user_config.skb_num_ap = 16;
+#endif
+#ifdef CONFIG_WHC_NONE
+	wifi_user_config.skb_num_ap = 0;
+#endif
+#endif
+	wifi_user_config.skb_buf_size = MAX_SKB_BUF_SIZE;
+	wifi_user_config.wifi_wpa_mode_force = RTW_WPA_AUTO_MODE;
+
+	/*Regulatory related*/
+	wifi_user_config.country_code[0] = 0;
+	wifi_user_config.country_code[1] = 0;
+	wifi_user_config.bw_40_enable = 0;
+	wifi_user_config.freq_band_support = RTW_SUPPORT_BAND_MAX;
+	wifi_user_config.tx_pwr_table_selection = 2;
+	wifi_user_config.tpc_enable = 0; /* 1: apply TPC for FCC/MKK/KCC/IC/ETSI(5.25~5.35GHz, 5.47~5.725GHz), CN(5.25~5.35GHz) */
+	wifi_user_config.rtw_802_11d_en = 0;
+	wifi_user_config.rtw_trp_tis_cert_en = RTW_TRP_TIS_DISABLE;
+	wifi_user_config.rtw_edcca_mode = RTW_EDCCA_NORM;
+	wifi_user_config.antdiv_mode = RTW_ANTDIV_DISABLE;
+	wifi_user_config.probe_hidden_ap_on_passive_ch = 1;
+
+	/* IPS(Inactive Power Save), power save when wifi unconnected */
+	wifi_user_config.ips_enable = 1;
+	wifi_user_config.ips_level = RTW_IPS_WIFI_OFF;
+	wifi_user_config.ips_ctrl_by_usr = 0;
+
+	/* LPS(Legacy Power Save), power save when wifi connected */
+	wifi_user_config.lps_enable = 1;
+	wifi_user_config.lps_listen_interval = 0; // lps_listen_interval
+	wifi_user_config.lps_rx_unicast_pkt_timeout = 40;	/* set rx unicast packet timeout in LPS, unit:ms, max_value:100*/
+	wifi_user_config.wowlan_rx_bcmc_dis = 0;
+
+	/* Softap related */
+	wifi_user_config.ap_sta_num = 5;	/*should not exceed 14 */
+	wifi_user_config.ap_polling_sta = 0;
+	wifi_user_config.ap_bypass_forwarding = 0;
+
+	/* MISC */
+	wifi_user_config.en_mcc = 0;  /* must select ENABLE_MCC in menuconfig when wifi_user_config.en_mcc=1 */
+	wifi_user_config.mcc_force_p1_slot_ratio = 44;
+	wifi_user_config.ampdu_rx_enable = 1;
+	wifi_user_config.ampdu_tx_enable = 1;
+	wifi_user_config.ap_compatibilty_enabled = 0x07;
+	wifi_user_config.set_channel_api_do_rfk = 1;
+	wifi_user_config.rf_calibration_disable = 0;
+	wifi_user_config.tx_shortcut_enable = 1;
+	wifi_user_config.rx_shortcut_enable = 1;
+	wifi_user_config.keepalive_interval = 20;
+	wifi_user_config.rx_cca_thresh = 0;
+	wifi_user_config.rate_mask_cck = 0x0;
+	wifi_user_config.sgi = 1;
+
+	/* WPS */
+	wifi_user_config.wps_retry_count = 4;
+	wifi_user_config.wps_retry_interval = 5000;
+
+#if (defined(CONFIG_WHC_DEV) && !defined(CONFIG_WHC_INTF_IPC)) &&  !defined(CONFIG_WHC_WPA_SUPPLICANT_OFFLOAD)
+	/* Linux wifi supports cfg80211 ops. */
+	wifi_user_config.cfg80211 = 1;
+#else
+	wifi_user_config.cfg80211 = 0;
+#endif
+
+	/* wifi speaker */
+	wifi_user_config.wifi_speaker_feature = 0;
+
+	/*R-mesh*/
+	wifi_user_config.wtn_en = 0;
+	wifi_user_config.wtn_strong_rssi_thresh = -50;
+	wifi_user_config.wtn_father_refresh_timeout = 3000;
+	wifi_user_config.wtn_child_refresh_timeout = 4000;
+	wifi_user_config.wtn_rnat_en = 0;
+	wifi_user_config.wtn_fixed_rnat_node = 0;
+	wifi_user_config.wtn_connect_only_to_rnat = 0;
+	wifi_user_config.wtn_max_node_num = 15;
+	if (wifi_user_config.wtn_en) {
+		skb_num_np_rsvd = 16; /*4 for rx_ring_buffer + 2 for mgnt trx + 10 for tunnel tx */
+		wifi_user_config.skb_num_np = 20; /* skb_num_np should >= rx_ampdu_num + skb_num_np_rsvd */
+	}
+
+	/* ensure skb_num_np >= rx_ampdu_num + skb_num_np_rsvd */
+	if (wifi_user_config.skb_num_np < wifi_user_config.rx_ampdu_num + skb_num_np_rsvd) {
+		wifi_user_config.skb_num_np = wifi_user_config.rx_ampdu_num + skb_num_np_rsvd;
+		RTK_LOGW(TAG_WLAN_DRV, "change skb_num_np to %d\n", wifi_user_config.skb_num_np);
+	}
+
+	/* ensure ap_sta_num not exceed 14*/
+	if (wifi_user_config.ap_sta_num > 14) {
+		wifi_user_config.ap_sta_num = 14;
+		RTK_LOGW(TAG_WLAN_DRV, "change ap_sta_num to 14\n");
+	}
+}

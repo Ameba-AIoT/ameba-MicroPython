@@ -84,8 +84,8 @@
 #define MICROPY_FATFS_RPATH                 (2)
 #define MICROPY_FATFS_MAX_SS                (4096)
 #define MICROPY_FATFS_LFN_CODE_PAGE         437 /* 1=SFN/ANSI 437=LFN/U.S.(OEM) */
-// todo
-#define MICROPY_FATFS_NORTC                 (1)
+// get_fattime() sources timestamps from the same RTC as machine.RTC (fatfs_port.c).
+#define MICROPY_FATFS_NORTC                 (0)
 
 // control over Python builtins
 #define MICROPY_PY_STR_BYTES_CMP_WARN       (1)
@@ -128,10 +128,7 @@
 #define MICROPY_PY_MACHINE_UART              (1)
 #define MICROPY_PY_MACHINE_UART_INCLUDEFILE  "src/machine_uart.c"
 #define MICROPY_PY_MACHINE_UART_IRQ          (1)
-#define MICROPY_PY_MACHINE_UART_IRQ_RXIDLE   (0)   // not yet implemented
 #define MICROPY_PY_MACHINE_UART_SENDBREAK    (1)
-// UART IRQ trigger constants exposed to Python (machine.UART.IRQ_RX etc.)
-#define MICROPY_PY_MACHINE_UART_IRQ_FLAG_RX  (1)
 #define MICROPY_PY_MACHINE_I2C               (1)
 #define MICROPY_PY_MACHINE_SOFTI2C           (1)
 #define MICROPY_PY_MACHINE_SPI               (1)

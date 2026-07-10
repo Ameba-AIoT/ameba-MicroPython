@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
-// machine.ADC port implementation for ameba-rtos (AmebaDplus).
+// machine.ADC port implementation for ameba-rtos.
 //
 // INCLUDEFILE — included by extmod/machine_adc.c via
 // MICROPY_PY_MACHINE_ADC_INCLUDEFILE.  Defines machine_adc_obj_t and all
 // mp_machine_adc_* functions required by the extmod framework.
 //
-// ADC pins: PB19 (CH0), PB18 (CH1), PB17 (CH2), PB16 (CH3),
-// PB15 (CH4), PB14 (CH5), PB13 (CH6), VBAT_MEAS (CH7, internal).
+// 8 channels (CH0-CH7) via the SDK's AD_0..AD_7 PinName aliases. On
+// AmebaDplus, AD_7 is VBAT_MEAS, an internal channel with no external pin
+// (see the CONFIG_AMEBADPLUS guard in mp_machine_adc_deinit below); on other
+// SoCs all 8 channels are normal external pins.
 
 // Must be defined (can be empty) for the extmod locals dict.
 #define MICROPY_PY_MACHINE_ADC_CLASS_CONSTANTS
@@ -22,19 +24,22 @@ typedef struct {
     uint8_t channel;
 } adc_pin_map_t;
 
+// AD_0..AD_7 are the SDK's own PinName aliases for the real hardware pins
+// (see each SoC's PinNames.h / analogin_api.c PinMap_ADC[]), so this table
+// tracks per-SoC pin assignments automatically instead of hardcoding them.
 static const adc_pin_map_t adc_pin_table[] = {
-    {PB_19, 0},         // AD_0 = CH0
-    {PB_18, 1},         // AD_1 = CH1
-    {PB_17, 2},         // AD_2 = CH2
-    {PB_16, 3},         // AD_3 = CH3
-    {PB_15, 4},         // AD_4 = CH4
-    {PB_14, 5},         // AD_5 = CH5
-    {PB_13, 6},         // AD_6 = CH6
-    {VBAT_MEAS, 7},     // CH7 = VBAT (internal, no external pin)
+    {AD_0, 0},
+    {AD_1, 1},
+    {AD_2, 2},
+    {AD_3, 3},
+    {AD_4, 4},
+    {AD_5, 5},
+    {AD_6, 6},
+    {AD_7, 7},          // AD_7 == VBAT_MEAS (internal) on AmebaDplus
     {NC, 0xFF},         // terminator
 };
 
-#define ADC_PIN_COUNT 7       // 0-6 are external pins; CH7 = VBAT internal
+#define ADC_PIN_COUNT 8       // AD_0..AD_7 (AD_7 == VBAT_MEAS on AmebaDplus)
 
 static int8_t adc_pin_to_channel(PinName pin) {
     for (const adc_pin_map_t *p = adc_pin_table; p->pin != NC; p++) {
@@ -146,11 +151,15 @@ static mp_int_t mp_machine_adc_read_u16(machine_adc_obj_t *self) {
 static void mp_machine_adc_deinit(machine_adc_obj_t *self) {
     if (self->initialized) {
         analogin_deinit(&self->adc);
+        #if defined(CONFIG_AMEBADPLUS)
         // VBAT_MEAS is an internal measurement channel with no external pin;
         // analogin_init skips Pinmux_Config for it, so we skip restoration too.
         if (self->pin != VBAT_MEAS) {
             Pinmux_Config((u8)self->pin, PINMUX_FUNCTION_GPIO);
         }
+        #else
+        Pinmux_Config((u8)self->pin, PINMUX_FUNCTION_GPIO);
+        #endif
         self->initialized = false;
     }
 }

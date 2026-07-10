@@ -29,6 +29,7 @@
 #include "py/mphal.h"
 #include "py/mperrno.h"
 #include "extmod/modmachine.h"
+#include "shared/runtime/mpirq.h"
 #include "machine_timer.h"
 #include "timer_api.h"
 
@@ -45,7 +46,18 @@
 // 数组按硬件 timer id（0..11）直接寻址，故大小固定为 12；槽 8/9 永不使用
 // （已从 machine_timer_pool 排除），但保留以保持 id 与下标一一对应。
 #define MACHINE_TIMER_COUNT (12)
+#if defined(CONFIG_AMEBADPLUS)
 static const uint8_t machine_timer_pool[] = {10, 11, 0, 1, 2, 3, 4, 5, 6, 7};
+#else
+// AmebaGreen2's GTIMER_MAX is only 9 (ids 0..8, TIMER8 reserved for PWM), and
+// its gtimer_reload() -- called by every gtimer_start_one_shout/periodical --
+// hardcodes assert_param(obj->timer_id < 4), tighter than GTIMER_MAX itself.
+// Picking id 10/11 (Dplus's preferred ids, which don't exist here) indexes
+// Green2's TIMx[]/APBPeriph_TIMx[] tables out of bounds, feeding a garbage
+// pointer into RTIM_TimeBaseInit() -- this silently hung the board with no
+// crash output at all (confirmed on hardware). Only 0..3 are valid here.
+static const uint8_t machine_timer_pool[] = {0, 1, 2, 3};
+#endif
 
 typedef struct _machine_timer_obj_t {
     mp_obj_base_t base;
@@ -55,6 +67,7 @@ typedef struct _machine_timer_obj_t {
     uint8_t mode;        // TIMER_MODE_ONE_SHOT / TIMER_MODE_PERIODIC
     uint32_t period_us;
     mp_obj_t callback;
+    bool hard;           // run callback directly in the ISR instead of scheduling it
 } machine_timer_obj_t;
 
 // Pick the first free hardware timer from the preference pool; -1 if none.
@@ -71,9 +84,7 @@ static int8_t machine_timer_alloc(void) {
 // Runs in interrupt context; id is the (uintptr_t)self we passed as hid.
 static void machine_timer_isr(uint32_t id) {
     machine_timer_obj_t *self = (machine_timer_obj_t *)(uintptr_t)id;
-    if (self->callback != mp_const_none) {
-        mp_sched_schedule(self->callback, MP_OBJ_FROM_PTR(self));
-    }
+    mp_irq_dispatch(self->callback, MP_OBJ_FROM_PTR(self), self->hard);
 }
 
 static void machine_timer_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
@@ -96,9 +107,7 @@ static mp_obj_t machine_timer_init_helper(machine_timer_obj_t *self,
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    if (args[ARG_hard].u_bool) {
-        mp_raise_ValueError(MP_ERROR_TEXT("hard Timers not implemented"));
-    }
+    self->hard = args[ARG_hard].u_bool;
 
     // Compute period in microseconds.
     uint64_t period_us;
@@ -162,6 +171,7 @@ static mp_obj_t machine_timer_make_new(const mp_obj_type_t *type,
     self->callback = mp_const_none;
     self->mode = TIMER_MODE_PERIODIC;
     self->period_us = 0;
+    self->hard = false;
 
     // First positional arg is the (virtual) timer id; defaults to -1.
     mp_int_t id = -1;

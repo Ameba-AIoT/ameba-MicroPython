@@ -26,6 +26,7 @@
 
 #include <stdio.h>
 #include <stddef.h>
+#include <string.h>
 #include "py/runtime.h"
 #include "py/mphal.h"
 #include "extmod/modmachine.h"
@@ -73,115 +74,93 @@ typedef struct _machine_pin_obj_t {
     ((machine_pin_obj_t *)((char *)(irq_ptr) - offsetof(machine_pin_obj_t, irq)))
 
 // ---------------------------------------------------------------------------
-// Valid PinName check (RTL8721DAF SoC level)
+// Per-SoC pin bank layout
 //
-// Excluded at hardware level (cannot be safely used on any board):
-//   PA_0..PA_5 : SPIC0 primary pins, physically bonded to MCM Flash die
-//                inside the chip package — reconfiguring pinmux disconnects
-//                Flash and hangs the system on all RTL8721DAF boards.
+// Ameba SoCs number pins as (port << 5) | n, so machine_pin_obj_table can be
+// indexed directly by a PinName.  Each SoC declares the highest pin index in
+// PORT_A/B/C (values follow the SoC's PinNames.h); -1 means the bank does not
+// exist.  Adding a new SoC = adding one block here.
 //
-// All other PA/PB pins are valid at SoC level.  Board-level restrictions
-// (e.g. PA_13..PA_18 used for Flash on PKE8721DAF) are handled by the
-// board's pins.csv, which omits those pins from the user-visible name table.
-//
-// PA_6 ..PA_12 : SPIC1_PSRAM capable; RTL8721DAF has no PSRAM → free GPIO
-// PA_13..PA_18 : SPIC0 alternate Flash pins on PKE8721DAF, but valid SoC
-//                pins on other boards — excluded from pins.csv, not here
-// PA_19..PA_31 : General GPIO (PA_26..PA_31 on PKE8721DAF board headers)
-// PB_0 ..PB_24 : Includes all board-exposed PB pins
+// No pins are excluded at this SoC level (e.g. flash/power pins are kept): the
+// user-facing per-board naming in pins.csv (Pin.board) is what decides which
+// pins are exposed and usable on a given board.
 // ---------------------------------------------------------------------------
+#if defined(CONFIG_AMEBADPLUS)
+#define AMEBA_PORT_A_MAX  (31)
+#define AMEBA_PORT_B_MAX  (31)
+#define AMEBA_PORT_C_MAX  (-1)
+#elif defined(CONFIG_AMEBALITE)
+#define AMEBA_PORT_A_MAX  (31)
+#define AMEBA_PORT_B_MAX  (19)
+#define AMEBA_PORT_C_MAX  (-1)
+#elif defined(CONFIG_AMEBAGREEN2)
+#define AMEBA_PORT_A_MAX  (31)
+#define AMEBA_PORT_B_MAX  (31)
+#define AMEBA_PORT_C_MAX  (8)
+#elif defined(CONFIG_AMEBASMART)
+#define AMEBA_PORT_A_MAX  (31)
+#define AMEBA_PORT_B_MAX  (31)
+#define AMEBA_PORT_C_MAX  (6)
+#else
+#error "Unknown Ameba SoC: add its PORT_A/B/C max pin indices in machine_pin.c"
+#endif
+
+// Table size covers indices 0 .. highest valid PinName.  PC_n starts at
+// index 64 (bank 2 << 5); when PORT_C is absent the top bank is PORT_B
+// (bank 1 << 5).  Uses literal bank numbers (not the PinNames.h PORT_* enum)
+// so this stays a pure preprocessor constant -- MP_REGISTER_ROOT_POINTER below
+// is scanned into genhdr/root_pointers.h, which does not include PinNames.h.
+#if AMEBA_PORT_C_MAX >= 0
+#define AMEBA_PIN_TABLE_SIZE  ((2 << 5) + AMEBA_PORT_C_MAX + 1)
+#else
+#define AMEBA_PIN_TABLE_SIZE  ((1 << 5) + AMEBA_PORT_B_MAX + 1)
+#endif
+
+// A PinName is valid iff its table slot was populated by
+// machine_pin_table_init() (base.type is non-NULL only for real pins).
 #define IS_VALID_PINNAME(p) \
-    (((p) >= PA_6  && (p) <= PA_31) || \
-     ((p) >= PB_0  && (p) <= PB_11) || \
-     ((p) >= PB_13 && (p) <= PB_28))
+    ((unsigned)(p) < AMEBA_PIN_TABLE_SIZE && \
+     machine_pin_obj_table[(p)].base.type != NULL)
 
 // ---------------------------------------------------------------------------
-// Static singleton table
+// Singleton table (populated at startup by machine_pin_table_init)
 // ---------------------------------------------------------------------------
 
-// Macro to fill one table slot.  All fields must be initialised so that
-// zero-init gap entries (indices 25..31) remain clearly invalid (base.type==NULL).
-#define AMEBA_PIN_ENTRY(PINNAME) \
-    [PINNAME] = { \
-        .base            = {.type = &machine_pin_type}, \
-        .id              = (PINNAME), \
-        .mode            = MP_PIN_MODE_IN, \
-        .pull            = PullNone, \
-        .irq_trigger     = 0, \
-        .gpio_configured = false, \
-        .irq_initialized = false, \
-        .od_output_high  = true, \
-        .gpio            = {.pin = (PINNAME)}, \
-        .gpio_irq        = {.pin = (PINNAME)}, \
-        .irq             = {.base = {.type = &machine_pin_irq_type}}, \
+static machine_pin_obj_t machine_pin_obj_table[AMEBA_PIN_TABLE_SIZE];
+
+// Populate one PORT bank (bank = PORT_A/B/C) up to and including index max_n.
+// Skips banks that don't exist on this SoC (max_n < 0).
+static void machine_pin_table_init_bank(int bank, int max_n) {
+    for (int n = 0; n <= max_n; n++) {
+        int idx = (bank << 5) | n;
+        machine_pin_obj_table[idx] = (machine_pin_obj_t) {
+            .base            = {.type = &machine_pin_type},
+            .id              = (PinName)idx,
+            .mode            = MP_PIN_MODE_IN,
+            .pull            = PullNone,
+            .irq_trigger     = 0,
+            .gpio_configured = false,
+            .irq_initialized = false,
+            .od_output_high  = true,
+            .gpio            = {.pin = (PinName)idx},
+            .gpio_irq        = {.pin = (PinName)idx},
+            .irq             = {.base = {.type = &machine_pin_irq_type}},
+        };
     }
+}
 
-// Array covers indices 0..63 (PA_0..PA_31 + PB_0..PB_31).
-// Omitted (zero-initialised, IS_VALID_PINNAME also rejects):
-//   PA_0..PA_5  : SPIC0 primary pins, physically bonded to MCM Flash
-//   PB_12       : does not exist in RTL8721Dx SoC (absent from pinmux table)
-//   PB_29       : does not exist in RTL8721Dx SoC (absent from pinmux table)
-static machine_pin_obj_t machine_pin_obj_table[64] = {
-    // PA_0..PA_5 (indices 0-5): MCM Flash — zero-initialised, never reached
-    AMEBA_PIN_ENTRY(PA_6),
-    AMEBA_PIN_ENTRY(PA_7),
-    AMEBA_PIN_ENTRY(PA_8),
-    AMEBA_PIN_ENTRY(PA_9),
-    AMEBA_PIN_ENTRY(PA_10),
-    AMEBA_PIN_ENTRY(PA_11),
-    AMEBA_PIN_ENTRY(PA_12),
-    AMEBA_PIN_ENTRY(PA_13),
-    AMEBA_PIN_ENTRY(PA_14),
-    AMEBA_PIN_ENTRY(PA_15),
-    AMEBA_PIN_ENTRY(PA_16),
-    AMEBA_PIN_ENTRY(PA_17),
-    AMEBA_PIN_ENTRY(PA_18),
-    AMEBA_PIN_ENTRY(PA_19),
-    AMEBA_PIN_ENTRY(PA_20),
-    AMEBA_PIN_ENTRY(PA_21),
-    AMEBA_PIN_ENTRY(PA_22),
-    AMEBA_PIN_ENTRY(PA_23),
-    AMEBA_PIN_ENTRY(PA_24),
-    AMEBA_PIN_ENTRY(PA_25),
-    AMEBA_PIN_ENTRY(PA_26),
-    AMEBA_PIN_ENTRY(PA_27),
-    AMEBA_PIN_ENTRY(PA_28),
-    AMEBA_PIN_ENTRY(PA_29),
-    AMEBA_PIN_ENTRY(PA_30),
-    AMEBA_PIN_ENTRY(PA_31),
-    AMEBA_PIN_ENTRY(PB_0),
-    AMEBA_PIN_ENTRY(PB_1),
-    AMEBA_PIN_ENTRY(PB_2),
-    AMEBA_PIN_ENTRY(PB_3),
-    AMEBA_PIN_ENTRY(PB_4),
-    AMEBA_PIN_ENTRY(PB_5),
-    AMEBA_PIN_ENTRY(PB_6),
-    AMEBA_PIN_ENTRY(PB_7),
-    AMEBA_PIN_ENTRY(PB_8),
-    AMEBA_PIN_ENTRY(PB_9),
-    AMEBA_PIN_ENTRY(PB_10),
-    AMEBA_PIN_ENTRY(PB_11),
-    // PB_12 (index 44): does not exist in SoC — zero-initialised
-    AMEBA_PIN_ENTRY(PB_13),
-    AMEBA_PIN_ENTRY(PB_14),
-    AMEBA_PIN_ENTRY(PB_15),
-    AMEBA_PIN_ENTRY(PB_16),
-    AMEBA_PIN_ENTRY(PB_17),
-    AMEBA_PIN_ENTRY(PB_18),
-    AMEBA_PIN_ENTRY(PB_19),
-    AMEBA_PIN_ENTRY(PB_20),
-    AMEBA_PIN_ENTRY(PB_21),
-    AMEBA_PIN_ENTRY(PB_22),
-    AMEBA_PIN_ENTRY(PB_23),
-    AMEBA_PIN_ENTRY(PB_24),
-    AMEBA_PIN_ENTRY(PB_25),
-    AMEBA_PIN_ENTRY(PB_26),
-    AMEBA_PIN_ENTRY(PB_27),
-    AMEBA_PIN_ENTRY(PB_28),
-    // PB_29 (index 61): does not exist in SoC — zero-initialised
-    AMEBA_PIN_ENTRY(PB_30),
-    AMEBA_PIN_ENTRY(PB_31),
-};
+// Build the pin object table for the compiled SoC's banks.  Called once at
+// startup (before the soft-reset loop) so pin objects/state persist across
+// soft reset, matching the previous static-table behaviour.
+void machine_pin_table_init(void) {
+    // Literal bank numbers (0=PORT_A, 1=PORT_B, 2=PORT_C) rather than the
+    // PinNames.h PORT_* enum: PORT_C is not declared on SoCs without a bank C
+    // (AmebaDplus/AmebaLite).  Banks with max < 0 make the loop a no-op.
+    memset(machine_pin_obj_table, 0, sizeof(machine_pin_obj_table));
+    machine_pin_table_init_bank(0, AMEBA_PORT_A_MAX);
+    machine_pin_table_init_bank(1, AMEBA_PORT_B_MAX);
+    machine_pin_table_init_bank(2, AMEBA_PORT_C_MAX);
+}
 
 // HAL: extract PinName from a machine.Pin object.
 mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj) {
@@ -202,30 +181,12 @@ mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj) {
 // the on-module SPI Flash — use with care (SD card, GPIO, etc. are fine
 // when Flash is not actively being reconfigured away from SPIC0).
 // ---------------------------------------------------------------------------
+// The named board pins are generated per-board from boards/<BOARD>/pins.csv by
+// boards/make-pins.py (invoked from src/CMakeLists.txt), which emits the table
+// body into pins_board.h.  Each entry maps a user-facing name to a slot in
+// machine_pin_obj_table.
 static const mp_rom_map_elem_t machine_pin_board_pins_locals_dict_table[] = {
-    // Board pin 3-6, 16-17: SPIC_FLASH alternate / SD card / RGB LED
-    { MP_ROM_QSTR(MP_QSTR_PA13), MP_ROM_PTR(&machine_pin_obj_table[PA_13]) },
-    { MP_ROM_QSTR(MP_QSTR_PA14), MP_ROM_PTR(&machine_pin_obj_table[PA_14]) },
-    { MP_ROM_QSTR(MP_QSTR_PA15), MP_ROM_PTR(&machine_pin_obj_table[PA_15]) },
-    { MP_ROM_QSTR(MP_QSTR_PA16), MP_ROM_PTR(&machine_pin_obj_table[PA_16]) },
-    { MP_ROM_QSTR(MP_QSTR_PA17), MP_ROM_PTR(&machine_pin_obj_table[PA_17]) },
-    { MP_ROM_QSTR(MP_QSTR_PA18), MP_ROM_PTR(&machine_pin_obj_table[PA_18]) },
-    // Board pin 9-14: general GPIO / QSPI / SD / SWD
-    { MP_ROM_QSTR(MP_QSTR_PA26), MP_ROM_PTR(&machine_pin_obj_table[PA_26]) },
-    { MP_ROM_QSTR(MP_QSTR_PA27), MP_ROM_PTR(&machine_pin_obj_table[PA_27]) },
-    { MP_ROM_QSTR(MP_QSTR_PA28), MP_ROM_PTR(&machine_pin_obj_table[PA_28]) },
-    { MP_ROM_QSTR(MP_QSTR_PA29), MP_ROM_PTR(&machine_pin_obj_table[PA_29]) },
-    { MP_ROM_QSTR(MP_QSTR_PA30), MP_ROM_PTR(&machine_pin_obj_table[PA_30]) },
-    { MP_ROM_QSTR(MP_QSTR_PA31), MP_ROM_PTR(&machine_pin_obj_table[PA_31]) },
-    // Board pin 7-8: UART LOG (shared with REPL console)
-    { MP_ROM_QSTR(MP_QSTR_PB4),  MP_ROM_PTR(&machine_pin_obj_table[PB_4]) },
-    { MP_ROM_QSTR(MP_QSTR_PB5),  MP_ROM_PTR(&machine_pin_obj_table[PB_5]) },
-    // Board pin 0-2, 15, 18, and others: general GPIO / QSPI / Touch-ADC
-    { MP_ROM_QSTR(MP_QSTR_PB17), MP_ROM_PTR(&machine_pin_obj_table[PB_17]) },
-    { MP_ROM_QSTR(MP_QSTR_PB18), MP_ROM_PTR(&machine_pin_obj_table[PB_18]) },
-    { MP_ROM_QSTR(MP_QSTR_PB19), MP_ROM_PTR(&machine_pin_obj_table[PB_19]) },
-    { MP_ROM_QSTR(MP_QSTR_PB20), MP_ROM_PTR(&machine_pin_obj_table[PB_20]) },
-    { MP_ROM_QSTR(MP_QSTR_PB21), MP_ROM_PTR(&machine_pin_obj_table[PB_21]) },
+    #include "pins_board.h"
 };
 static MP_DEFINE_CONST_DICT(machine_pin_board_pins_locals_dict,
     machine_pin_board_pins_locals_dict_table);
@@ -328,8 +289,9 @@ void mp_hal_pin_od_high(mp_hal_pin_obj_t pin) {
 // ---------------------------------------------------------------------------
 static void machine_pin_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
     machine_pin_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    const char *port = (self->id < PB_0) ? "PA" : "PB";
-    int num = (self->id < PB_0) ? (int)self->id : (int)(self->id - PB_0);
+    int bank = (int)self->id >> 5;   // 0=PORT_A, 1=PORT_B, 2=PORT_C
+    int num = (int)self->id & 0x1f;
+    const char *port = (bank == PORT_A) ? "PA" : (bank == PORT_B) ? "PB" : "PC";
     mp_printf(print, "Pin(%s%d)", port, num);
 }
 
@@ -658,4 +620,5 @@ MP_DEFINE_CONST_OBJ_TYPE(
 // ---------------------------------------------------------------------------
 // Root pointer: IRQ handler table (one slot per valid PinName index)
 // ---------------------------------------------------------------------------
-MP_REGISTER_ROOT_POINTER(mp_obj_t machine_pin_irq_handler[57]);
+// One slot per PinName index (the table is indexed directly by self->id).
+MP_REGISTER_ROOT_POINTER(mp_obj_t machine_pin_irq_handler[AMEBA_PIN_TABLE_SIZE]);
