@@ -179,6 +179,7 @@ ameba_list_append(private_sources
     machine_bitstream.c
     ${MICROPY_DIR}/drivers/bus/softspi.c
     ${MICROPY_DIR}/drivers/dht/dht.c
+    mbedtls_strerror_wrap.c
     ${MICROPY_SOURCE_SHARED}
     ${MICROPY_SOURCE_EXTMOD}
     ${MICROPY_SOURCE_LIB}
@@ -280,6 +281,29 @@ ameba_add_internal_library(micropython
     p_DEPENDENCIES
         ${c_BUILD_INFO} #REVIEW: build_info.h is REQUIRED by atcmd_sys.c
 )
+
+# Redirect calls to mbedtls_strerror() (used throughout
+# micropython/extmod/modtls_mbedtls.c) to our own __wrap_mbedtls_strerror
+# (mbedtls_strerror_wrap.c), which prints error #define names instead of the
+# SDK's full English descriptions. The SDK's own error.o keeps its definition
+# (still pulled in whole by the final link's -Wl,--whole-archive for its other
+# exports) but nothing calls it by its real name anymore. Unlike the heap_5.c
+# vApplicationMallocFailedHook case, this works because caller
+# (modtls_mbedtls.c) and definition (error.o) are different translation units
+# -- --wrap only fails to intercept same-TU self-calls.
+#
+# NB: p_LINK_OPTIONS on ameba_add_internal_library has no effect here -- this
+# component is archived into a plain .a (ar doesn't consume linker flags), and
+# the final executable is linked from a flat list of component .a paths, not
+# via target_link_libraries, so nothing propagates a per-component
+# INTERFACE/PUBLIC link option to that link step. c_MCU_PROJ_CONFIG (set up in
+# ameba-rtos/cmake/common.cmake) is the actual INTERFACE target the framework
+# uses to broadcast common link flags (e.g. the SDK's own libc -Wl,-wrap,...
+# list) to every image; appending to it here is the only mechanism observed to
+# reach the real link command.
+if(TARGET ${c_MCU_PROJ_CONFIG})
+    target_link_options(${c_MCU_PROJ_CONFIG} INTERFACE "SHELL:-Wl,-wrap,mbedtls_strerror")
+endif()
 set(MICROPY_TARGET      ${c_CURRENT_TARGET_NAME})
 # get_target_property(_inc ${c_MCU_PROJ_CONFIG} INTERFACE_INCLUDE_DIRECTORIES)
 # Add additional extmod and usermod components.

@@ -166,12 +166,24 @@ static void machine_uart_irq_handler(uint32_t id, SerialIrq event) {
     uint16_t flags = 0;
     #endif
     if (event == RxIrq) {
+        // Drain the FIFO first, lagging enqueue by one byte so the *last*
+        // byte pulled can conditionally be dropped instead of enqueued (see
+        // below) -- then read LSR once, after draining, exactly like the
+        // proven-working ordering this replaces. RUART_BIT_BREAK_INT (and
+        // RUART_BIT_TIMEOUT_INT) only reliably show up in LSR once the FIFO
+        // byte(s) they're tagging have actually been popped via serial_getc()
+        // -- reading LSR *before* draining (tried first) never sees the
+        // break flag at all.
         bool got_byte = false;
+        int pending = -1;
         while (serial_readable(&self->serial)) {
             int c = serial_getc(&self->serial);
-            // Drop on overflow (ringbuf_put returns -1 when full).
-            ringbuf_put(&self->read_buffer, (uint8_t)c);
-            got_byte = true;
+            if (pending >= 0) {
+                // Drop on overflow (ringbuf_put returns -1 when full).
+                ringbuf_put(&self->read_buffer, (uint8_t)pending);
+                got_byte = true;
+            }
+            pending = c;
         }
         #if MICROPY_PY_MACHINE_UART_IRQ
         // serial_irq_set(RxIrq, 1) enables RUART_BIT_ERBI | RUART_BIT_ELSI |
@@ -187,13 +199,33 @@ static void machine_uart_irq_handler(uint32_t id, SerialIrq event) {
         // (serial_api.c) works off a copy of LSR taken once at ISR entry, not
         // a fresh register read, so it isn't affected by what we clear here.
         uint32_t lsr = UART_LineStatusGet(machine_uart_regs(self));
+        bool is_break = lsr & RUART_BIT_BREAK_INT;
+        #else
+        bool is_break = false;
+        #endif
+        // On a break condition this UART pushes a spurious 0x00 into the RX
+        // FIFO at the same time it sets RUART_BIT_BREAK_INT, and unlike rp2's
+        // DR register there is no per-byte error tag bundled with the data --
+        // LSR only tells us a break happened somewhere in this drain batch,
+        // not which byte. The break byte arrives after any real data already
+        // queued ahead of it, so it's the one being held back in `pending` --
+        // drop it instead of enqueueing it, otherwise it sits in read_buffer
+        // as a phantom byte that permanently shifts every later read() by one
+        // (see machine_uart_irq_break.py). This assumes at most one break
+        // byte lands per interrupt; a break held long enough to push more
+        // than one would still leak the earlier extras into read_buffer.
+        if (pending >= 0 && !is_break) {
+            ringbuf_put(&self->read_buffer, (uint8_t)pending);
+            got_byte = true;
+        }
+        #if MICROPY_PY_MACHINE_UART_IRQ
         if (got_byte && (self->mp_irq_trigger & UART_IRQ_RX)) {
             flags |= UART_IRQ_RX;
         }
         if ((lsr & RUART_BIT_TIMEOUT_INT) && (self->mp_irq_trigger & UART_IRQ_RXIDLE)) {
             flags |= UART_IRQ_RXIDLE;
         }
-        if ((lsr & RUART_BIT_BREAK_INT) && (self->mp_irq_trigger & UART_IRQ_BREAK)) {
+        if (is_break && (self->mp_irq_trigger & UART_IRQ_BREAK)) {
             flags |= UART_IRQ_BREAK;
         }
         #endif
@@ -314,6 +346,18 @@ static void mp_machine_uart_init_helper(machine_uart_obj_t *self, size_t n_args,
     if (self->initialized) {
         serial_irq_set(&self->serial, RxIrq, 0);
         serial_free(&self->serial);
+        // self is machine_uart_obj[uart_id], reused in place rather than
+        // freshly allocated -- clear the previous instance's IRQ
+        // registration too. Otherwise mp_irq_trigger can still have
+        // UART_IRQ_TXIDLE set from before, so this *new* instance's own
+        // write() (see mp_machine_uart_write()) re-arms the one-shot TX
+        // interrupt on the strength of that stale bit even though this
+        // script never called .irq() -- and when it fires, it invokes
+        // mp_irq_obj, a dangling pointer into the *previous* instance's
+        // (possibly already GC-swept) Python callback. Reproducible hang:
+        // machine_uart_irq_txidle.py followed by machine_uart_tx.py.
+        self->mp_irq_obj = NULL;
+        self->mp_irq_trigger = 0;
     }
 
     // Switch to the new ring buffer and re-root it (drops the old root, if any).
@@ -362,6 +406,21 @@ static void mp_machine_uart_deinit(machine_uart_obj_t *self) {
         serial_free(&self->serial);
         self->initialized = false;
     }
+    // machine_uart_obj[] is a static table indexed by uart_id, reused by the
+    // next UART(id, ...) construction rather than freshly allocated -- clear
+    // the IRQ registration too, not just the RX buffer, otherwise a stale
+    // mp_irq_obj (already GC-swept, e.g. across a soft reset -- see
+    // machine_uart_deinit_all() below) can get invoked by a leftover armed
+    // TX one-shot interrupt (write() arms RUART_BIT_ETBEI for IRQ_TXIDLE and
+    // it only self-disables once it actually fires; if the FIFO was already
+    // empty at arm time it may never fire on its own) once the next UART
+    // instance's serial_init() re-enables the NVIC line, before that
+    // instance's own .irq() call has a chance to overwrite it. This is a
+    // real, reproducible hang: running machine_uart_irq_txidle.py (which
+    // leaves exactly this state behind) immediately before machine_uart_tx.py
+    // hangs the board.
+    self->mp_irq_obj = NULL;
+    self->mp_irq_trigger = 0;
 }
 
 // Called from the port soft-reset path (mp_main.c) BEFORE gc_sweep_all(): the RX
@@ -380,6 +439,11 @@ void machine_uart_deinit_all(void) {
         self->read_buffer.size = 0;
         self->read_buffer.iget = 0;
         self->read_buffer.iput = 0;
+        // mp_irq_obj points into the GC heap that's about to be swept -- see
+        // mp_machine_uart_deinit() for why this must be cleared, not just RX
+        // state.
+        self->mp_irq_obj = NULL;
+        self->mp_irq_trigger = 0;
     }
 }
 
@@ -478,7 +542,19 @@ static mp_uint_t mp_machine_uart_ioctl(mp_obj_t self_in, mp_uint_t request, uint
             }
         }
     } else if (request == MP_STREAM_FLUSH) {
-        // Blocking TX already drained bytes into the FIFO during write().
+        // write() only queues bytes into the 16-byte hardware TX FIFO; it
+        // does not wait for them to actually shift out the wire. Poll the
+        // TX-empty flag (mirrors esp32's uart_wait_tx_done() / rp2's
+        // mp_machine_uart_txdone()) with a worst-case timeout sized for a
+        // full FIFO drain at the current baudrate, doubled for margin.
+        uint32_t timeout_us = (UART_TX_FIFO_SIZE + 1) * 10 * 1000000UL * 2 / self->baudrate;
+        uint32_t start = mp_hal_ticks_us();
+        while (!(UART_LineStatusGet(machine_uart_regs(self)) & RUART_BIT_TX_EMPTY)) {
+            if (mp_hal_ticks_us() - start > timeout_us) {
+                *errcode = MP_ETIMEDOUT;
+                return MP_STREAM_ERROR;
+            }
+        }
         ret = 0;
     } else {
         *errcode = MP_EINVAL;

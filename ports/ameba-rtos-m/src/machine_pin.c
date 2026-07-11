@@ -162,10 +162,18 @@ void machine_pin_table_init(void) {
     machine_pin_table_init_bank(2, AMEBA_PORT_C_MAX);
 }
 
-// HAL: extract PinName from a machine.Pin object.
+// HAL: resolve a user pin argument (Pin instance, int PinName, or board
+// string) to a validated PinName, raising ValueError on an unknown pin.
+// extmod's generic SoftI2C/SoftSPI/time_pulse_us/bitstream/onewire code calls
+// this directly on the raw scl=/sda=/pin argument the user passed in -- it is
+// never guaranteed to already be a machine.Pin object, so this must go
+// through the same resolution as mp_hal_pin_resolve() below (which it is a
+// thin wrapper around) rather than blindly casting, or a plain int/string
+// argument reads garbage out of whatever object it actually is and typically
+// hangs the board (out-of-bounds machine_pin_obj_table index landing on an
+// unmapped/peripheral address).
 mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj) {
-    machine_pin_obj_t *pin = (machine_pin_obj_t *)pin_obj;
-    return pin->id;
+    return mp_hal_pin_resolve(pin_obj);
 }
 
 // ---------------------------------------------------------------------------

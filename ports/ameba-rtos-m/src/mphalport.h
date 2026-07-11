@@ -54,13 +54,16 @@ static inline void mp_hal_end_atomic_section(uint32_t state) {
 // mp_hal_get_pin_obj function declaration below.
 #define mp_hal_pin_obj_t PinName
 
-// Used by machine.PWM and other pin-based modules to extract the PinName
-// from a machine.Pin object.  Implemented in machine_pin.c.
-mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj);
-
 // Resolve a user pin argument (Pin object, int PinName, or board string) to a
 // validated PinName, raising ValueError on an unknown pin.  Implemented in
-// machine_pin.c.  Used by machine.I2S, which accepts raw user pin arguments.
+// machine_pin.c.  extmod's generic SoftI2C/SoftSPI/time_pulse_us/bitstream/
+// onewire/adc_block code calls this directly on raw user pin arguments, so it
+// must not assume the argument is already a machine.Pin object.
+mp_hal_pin_obj_t mp_hal_get_pin_obj(void *pin_obj);
+
+// Same resolution as mp_hal_get_pin_obj() above (currently a thin wrapper
+// around it); kept as a separate name for callers (machine.I2S, machine.PWM)
+// that want to document their own raw-pin-argument acceptance explicitly.
 mp_hal_pin_obj_t mp_hal_pin_resolve(void *pin_in);
 
 // HAL pin primitives used by machine.SoftI2C / machine.SoftSPI /

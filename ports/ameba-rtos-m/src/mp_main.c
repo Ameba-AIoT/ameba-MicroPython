@@ -221,13 +221,28 @@ MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
 // turns any allocation failure (e.g. xTaskCreate() under heap pressure)
 // into a silent, unrecoverable hang. Log and return so callers see a normal
 // NULL/failure instead.
-//
-// AmebaDplus is excluded: its heap_5.c already strongly defines this
-// function (with a different, size_t-taking signature), so providing our
-// own here would be a duplicate-symbol link error there.
 void vApplicationMallocFailedHook(void) {
     mp_printf(MP_PYTHON_PRINTER, "vApplicationMallocFailedHook: malloc failed, free heap %u\n",
         (unsigned)xPortGetFreeHeapSize());
+}
+#elif defined(CONFIG_AMEBADPLUS)
+// AmebaDplus's heap_5.c (component/os/freertos/freertos_v10.4.3/Source/
+// portable/MemMang/heap_5.c) used to strongly define vApplicationMallocFailedHook
+// to enter a critical section and spin forever (for (;;);) on any allocation
+// failure, turning OOM into an unrecoverable hang that needs a physical
+// reset - observed in practice via extmod/tls_noleak.py, which leaks ~26 KB
+// per SSLContext (mbedtls allocates from this same FreeRTOS heap, not the
+// MicroPython GC heap) and hung the board after ~10 iterations instead of
+// raising MemoryError. A linker --wrap does not work here because the hang
+// site's callers (pvPortMallocBase/pvPortMallocCacheAligned) are in the same
+// translation unit as the hook itself, so --wrap's undefined-reference
+// redirection never triggers. Instead, heap_5.c's definition was marked
+// __attribute__((weak)) (submodule edit) so this strong definition wins the
+// link and every caller - including heap_5.c's own internal ones - resolves
+// here.
+void vApplicationMallocFailedHook(size_t xWantedSize) {
+    mp_printf(MP_PYTHON_PRINTER, "vApplicationMallocFailedHook: malloc failed, wanted %u bytes, free heap %u\n",
+        (unsigned)xWantedSize, (unsigned)xPortGetFreeHeapSize());
 }
 #endif
 

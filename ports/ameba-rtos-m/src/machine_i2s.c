@@ -287,10 +287,8 @@ static machine_i2s_obj_t *mp_machine_i2s_make_new_instance(mp_int_t i2s_id) {
 // init_helper
 // ---------------------------------------------------------------------------
 static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *args) {
-    // Resolve and validate the pin arguments.  mp_hal_pin_resolve raises
-    // ValueError for an unknown pin (string/int/Pin), instead of the silent
-    // garbage-to-PA0 mapping that mp_hal_get_pin_obj would produce for a bad
-    // string.
+    // Resolve and validate the pin arguments (string/int/Pin); raises
+    // ValueError for an unknown pin instead of dereferencing garbage.
     self->sck    = mp_hal_pin_resolve(args[ARG_sck].u_obj);
     self->ws     = mp_hal_pin_resolve(args[ARG_ws].u_obj);
     self->sd     = mp_hal_pin_resolve(args[ARG_sd].u_obj);
@@ -584,6 +582,17 @@ static void mp_machine_i2s_deinit(machine_i2s_obj_t *self) {
         AUDIO_SP_TXStart(self->i2s_id, DISABLE);
         AUDIO_SP_RXStart(self->i2s_id, DISABLE);
         AUDIO_SP_DmaCmd(self->i2s_id, DISABLE);
+
+        // KNOWN ISSUE (2026-07-11): constructing an RX instance immediately
+        // after deinit()ing a TX instance on the same SPORT hangs readinto()
+        // forever (no timeout in the shared extmod ring-buffer wait loop, so
+        // it requires a hardware reset). Reordering this teardown to stop
+        // SPORT/DMA before freeing the GDMA channel (matching the SDK's own
+        // audio_deinit() example order) did not fix it, nor did unconditionally
+        // calling AUDIO_SP_TXStart(ENABLE) before AUDIO_SP_RXStart(ENABLE) in
+        // start_transfer() (RX-only from a fresh boot works fine either way --
+        // only the TX-then-RX transition on one SPORT instance hangs). Root
+        // cause not found; see findings.md.
 
         // De-register and reset SPORT.
         AUDIO_SP_Unregister(self->i2s_id, SP_DIR_TX);
