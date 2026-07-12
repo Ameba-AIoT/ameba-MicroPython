@@ -36,6 +36,7 @@
 #include "ameba_backup_reg.h"  // BKUP_Set / BKUP_BIT_UARTBURN_BOOT for bootloader()
 #include "machine_pin.h"
 #include "machine_timer.h"
+#include "modmachine.h"
 
 // Reset cause values, aligned with esp32 for cross-port compatibility.
 typedef enum {
@@ -54,6 +55,9 @@ typedef enum {
     MP_WAKE_TIMER = 4
 } wake_reason_t;
 
+// MP_MACHINE_WAKE_IDLE/SLEEP/DEEPSLEEP come from modmachine.h (included
+// above) so that machine_rtc.c's RTC.irq(wake=...) can see the same values.
+
 #define MICROPY_PY_MACHINE_EXTRA_GLOBALS \
     { MP_ROM_QSTR(MP_QSTR_Pin),             MP_ROM_PTR(&machine_pin_type) }, \
     { MP_ROM_QSTR(MP_QSTR_Timer),           MP_ROM_PTR(&machine_timer_type) }, \
@@ -66,6 +70,9 @@ typedef enum {
     { MP_ROM_QSTR(MP_QSTR_wake_reason),     MP_ROM_PTR(&machine_wake_reason_obj) }, \
     { MP_ROM_QSTR(MP_QSTR_PIN_WAKE),        MP_ROM_INT(MP_WAKE_PIN) }, \
     { MP_ROM_QSTR(MP_QSTR_TIMER_WAKE),      MP_ROM_INT(MP_WAKE_TIMER) }, \
+    { MP_ROM_QSTR(MP_QSTR_IDLE),            MP_ROM_INT(MP_MACHINE_WAKE_IDLE) }, \
+    { MP_ROM_QSTR(MP_QSTR_SLEEP),           MP_ROM_INT(MP_MACHINE_WAKE_SLEEP) }, \
+    { MP_ROM_QSTR(MP_QSTR_DEEPSLEEP),       MP_ROM_INT(MP_MACHINE_WAKE_DEEPSLEEP) }, \
 
 static mp_obj_t mp_machine_unique_id(void) {
     // EFUSE_GetUUID returns a 4-byte chip UUID via sys_api.h -> ... -> ameba_chipinfo.h.

@@ -309,6 +309,38 @@ I2S 总线
 ``weekday`` 和 ``subsecond`` 这两个字段会被接受但直接忽略——不会写入硬件，
 getter 读回来的 ``subsecond`` 永远是 0。
 
+RTC 闹钟与中断
+----------------
+
+除了 ``datetime()``，``machine.RTC`` 还支持硬件闹钟和中断::
+
+    from machine import RTC
+
+    rtc = RTC()
+    rtc.alarm(0, 5000)               # 5 秒后触发一次
+    rtc.alarm(0, 5000, repeat=True)  # 每 5 秒触发一次
+    rtc.alarm_left(0)                # 距离触发还剩多少毫秒
+    rtc.alarm_cancel(0)
+
+    rtc.irq(trigger=rtc.ALARM0, handler=lambda irq: print("闹钟触发！"))
+
+只支持闹钟号 ``0``（即 ``RTC.ALARM0``）——硬件只有一路闹钟寄存器。闹钟走的
+是真实硬件中断，不是软件轮询；``alarm()``/``alarm_left()``/
+``alarm_cancel()``/``irq()`` 都已经在两块板子（PKE8721DAF、EV8711FLM）上
+实测过，CPU 正常运行（REPL/主循环）时闹钟能按预期触发并正确派发回调。
+``alarm_left()`` 在目标时刻距现在超过约49.7天时会溢出（回绕成一个错误的
+小数值）——不要设置这么远的闹钟。
+
+``irq(wake=...)`` 接受 ``machine.IDLE``/``SLEEP``/``DEEPSLEEP``，只是为了让
+API 形式跟上游保持一致，**目前这几个值都不能真正当唤醒源用**。两块板子上
+都实测过：武装好的 RTC 闹钟**唤不醒**不带超时参数的
+``machine.lightsleep()``——调用会永久卡死，只能重新 ``make deploy``（相当
+于重新烧录/复位）才能救回来。如果只是想睡到大约某个时间点，请给
+``machine.lightsleep(ms)`` 传一个明确的时长（覆盖闹钟间隔），不要指望靠
+RTC 中断把一次无限期的 lightsleep 唤醒。``machine.deepsleep()`` 同样唤不醒
+（deepsleep 的唤醒源目前只支持 AON 定时器和 AON GPIO 引脚）。这两个限制都
+是已知问题，尚未解决。
+
 WDT（看门狗定时器）
 ---------------------
 

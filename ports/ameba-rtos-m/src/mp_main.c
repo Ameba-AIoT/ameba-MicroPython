@@ -147,6 +147,15 @@ soft_reset_exit:
     machine_i2s_deinit_all();
     #endif
 
+    #if MICROPY_PY_MACHINE_RTC
+    // Disable any live RTC alarm before the GC heap is swept — the static
+    // RTC object survives soft reset with the vendor ISR still armed, and
+    // its rooted irq object (MP_STATE_PORT) would otherwise dispatch through
+    // swept Python state on the next fire.
+    extern void machine_rtc_deinit_all(void);
+    machine_rtc_deinit_all();
+    #endif
+
     gc_sweep_all();
     #if MICROPY_PY_THREAD
     mp_thread_deinit();

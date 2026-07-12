@@ -324,6 +324,42 @@ See :ref:`machine.RTC <machine.RTC>`::
 The ``weekday`` and ``subsecond`` fields are accepted but ignored -- they
 are not written to hardware, and the getter always reports ``subsecond=0``.
 
+RTC alarm and interrupts
+-------------------------
+
+``machine.RTC`` supports a hardware alarm and interrupt, in addition to
+``datetime()``::
+
+    from machine import RTC
+
+    rtc = RTC()
+    rtc.alarm(0, 5000)               # fire once, 5 seconds from now
+    rtc.alarm(0, 5000, repeat=True)  # fire every 5 seconds
+    rtc.alarm_left(0)                # milliseconds remaining
+    rtc.alarm_cancel(0)
+
+    rtc.irq(trigger=rtc.ALARM0, handler=lambda irq: print("alarm!"))
+
+Only alarm id ``0`` (``RTC.ALARM0``) is supported -- the hardware has a
+single alarm register. The alarm is a real hardware interrupt, not
+software polling; ``alarm()``/``alarm_left()``/``alarm_cancel()``/``irq()``
+have all been verified on hardware (both PKE8721DAF and EV8711FLM) to fire
+and dispatch correctly while the CPU is running normally (REPL/main loop).
+``alarm_left()`` overflows (wraps to a small, wrong value) for a target more
+than ~49.7 days away -- avoid arming an alarm that far out.
+
+``irq(wake=...)`` accepts ``machine.IDLE``/``SLEEP``/``DEEPSLEEP`` for API
+shape compatibility, but **none of them are currently functional as a wake
+source**. Tested on hardware on both boards: an armed RTC alarm does
+**not** wake the chip out of a parameterless ``machine.lightsleep()`` --
+the call hangs forever, and the board only recovers via a fresh
+``make deploy`` (i.e. a re-flash/reset). If you need to sleep for roughly
+an alarm interval, pass an explicit duration to ``machine.lightsleep(ms)``
+instead of relying on the RTC interrupt to end an indefinite sleep.
+``machine.deepsleep()`` cannot be woken by the RTC alarm either (deepsleep
+wake sources are limited to the AON timer and AON GPIO pins). Both
+limitations are known issues, not yet resolved.
+
 WDT (Watchdog timer)
 ----------------------
 
