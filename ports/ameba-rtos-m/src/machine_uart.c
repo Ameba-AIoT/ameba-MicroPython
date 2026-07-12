@@ -69,6 +69,9 @@ typedef struct _machine_uart_obj_t {
     uint16_t      mp_irq_flags;     // trigger flags from last ISR
     mp_irq_obj_t *mp_irq_obj;       // Python callback object
     #endif
+    #if defined(CONFIG_AMEBAGREEN2)
+    uint32_t      tx_done_at_us;    // mp_hal_ticks_us() deadline for flush(), see there
+    #endif
 } machine_uart_obj_t;
 
 static machine_uart_obj_t machine_uart_obj[UART_ID_COUNT];
@@ -375,6 +378,9 @@ static void mp_machine_uart_init_helper(machine_uart_obj_t *self, size_t n_args,
     serial_irq_handler(&self->serial, machine_uart_irq_handler, self->uart_id);
     serial_irq_set(&self->serial, RxIrq, 1);
 
+    #if defined(CONFIG_AMEBAGREEN2)
+    self->tx_done_at_us = mp_hal_ticks_us();
+    #endif
     self->initialized = true;
 }
 
@@ -511,6 +517,23 @@ static mp_uint_t mp_machine_uart_write(mp_obj_t self_in, const void *buf_in, mp_
         }
         serial_putc(&self->serial, src[i]);
     }
+    #if defined(CONFIG_AMEBAGREEN2)
+    // See flush()'s CONFIG_AMEBAGREEN2 branch for why this can't just poll
+    // LSR TX_EMPTY. Track when the bytes just queued will have finished
+    // draining out of the FIFO: at most FIFO_SIZE chars can be in flight
+    // when write() returns (the wait loop above already blocked for any
+    // more), so that bounds the remaining drain time regardless of `size`.
+    // Extend from any still-pending previous write's deadline instead of
+    // from now, so back-to-back write()s without an intervening flush()
+    // don't underestimate.
+    if (size > 0) {
+        uint32_t chars = size < UART_TX_FIFO_SIZE ? size : UART_TX_FIFO_SIZE;
+        uint32_t drain_us = chars * 10 * 1000000UL / self->baudrate;
+        uint32_t now = mp_hal_ticks_us();
+        uint32_t base = ((int32_t)(self->tx_done_at_us - now) > 0) ? self->tx_done_at_us : now;
+        self->tx_done_at_us = base + drain_us;
+    }
+    #endif
     #if MICROPY_PY_MACHINE_UART_IRQ
     // Arm a one-shot TX-FIFO-empty interrupt so IRQ_TXIDLE fires once this
     // write's bytes have actually left the FIFO (see machine_uart_irq_handler;
@@ -543,10 +566,30 @@ static mp_uint_t mp_machine_uart_ioctl(mp_obj_t self_in, mp_uint_t request, uint
         }
     } else if (request == MP_STREAM_FLUSH) {
         // write() only queues bytes into the 16-byte hardware TX FIFO; it
-        // does not wait for them to actually shift out the wire. Poll the
-        // TX-empty flag (mirrors esp32's uart_wait_tx_done() / rp2's
-        // mp_machine_uart_txdone()) with a worst-case timeout sized for a
-        // full FIFO drain at the current baudrate, doubled for margin.
+        // does not wait for them to actually shift out the wire.
+        #if defined(CONFIG_AMEBAGREEN2)
+        // AmebaGreen2's LSR TX_EMPTY (RUART_BIT_TX_EMPTY) bit never latches
+        // when polled without RUART_BIT_ETBEI enabled in IER -- confirmed by
+        // instrumenting this loop: the raw LSR value read back was
+        // bit-for-bit identical from the first read through timeout at every
+        // baudrate tested (2400/9600/115200), even though the bytes are
+        // genuinely transmitted correctly in the meantime (verified via a
+        // TX/RX loopback readback while this bug was open). Enabling ETBEI
+        // to force the bit to update would also arm the real TX-empty
+        // interrupt (serial_api.c's uart_irqhandler), which has side effects
+        // this flush() call shouldn't trigger. So wait out write()'s
+        // computed drain deadline (self->tx_done_at_us) instead of polling a
+        // status bit that doesn't work in this context on this SoC.
+        int32_t remaining_us = (int32_t)(self->tx_done_at_us - mp_hal_ticks_us());
+        if (remaining_us > 0) {
+            mp_hal_delay_us((uint32_t)remaining_us);
+        }
+        ret = 0;
+        #else
+        // Poll the TX-empty flag (mirrors esp32's uart_wait_tx_done() /
+        // rp2's mp_machine_uart_txdone()) with a worst-case timeout sized
+        // for a full FIFO drain at the current baudrate, doubled for
+        // margin.
         uint32_t timeout_us = (UART_TX_FIFO_SIZE + 1) * 10 * 1000000UL * 2 / self->baudrate;
         uint32_t start = mp_hal_ticks_us();
         while (!(UART_LineStatusGet(machine_uart_regs(self)) & RUART_BIT_TX_EMPTY)) {
@@ -556,6 +599,7 @@ static mp_uint_t mp_machine_uart_ioctl(mp_obj_t self_in, mp_uint_t request, uint
             }
         }
         ret = 0;
+        #endif
     } else {
         *errcode = MP_EINVAL;
         ret = MP_STREAM_ERROR;
