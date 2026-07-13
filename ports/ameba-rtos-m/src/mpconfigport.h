@@ -166,6 +166,19 @@
 #define MICROPY_PY_MACHINE_CAN                (0)
 #endif
 
+// network.LAN -- AmebaGreen2 (RTL8711F) has an RMII MAC + on-board RTL8201F
+// PHY; AmebaDplus has no RMII hardware at all, so the class doesn't exist
+// there (compile-time gate, matching this port's convention). network_lan.c's
+// body also needs CONFIG_ETHERNET (board opt-in via prj.conf, which
+// Kconfig-selects ETHERNET_RMII/LWIP_ETHERNET) for eth_init()/NETIF_ETH_INDEX
+// to actually exist in the link -- an AmebaGreen2 board without that opt-in
+// must not get this gate.
+#if defined(CONFIG_AMEBAGREEN2) && defined(CONFIG_ETHERNET)
+#define MICROPY_PY_NETWORK_LAN (1)
+#else
+#define MICROPY_PY_NETWORK_LAN (0)
+#endif
+
 #define MICROPY_PY_NETWORK (1)
 #define MICROPY_PY_NETWORK_WLAN                        (1)
 #define MICROPY_PY_NETWORK_INCLUDEFILE                 "src/modnetwork.h"

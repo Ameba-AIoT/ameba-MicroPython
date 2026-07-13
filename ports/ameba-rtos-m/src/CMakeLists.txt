@@ -112,6 +112,7 @@ set(MICROPY_SOURCE_QSTR
     ${MICROPY_PORT_DIR}/src/machine_pwm.c
     ${MICROPY_PORT_DIR}/src/machine_rtc.c
     ${MICROPY_PORT_DIR}/src/machine_can.c
+    ${MICROPY_PORT_DIR}/src/network_lan.c
     ${MICROPY_PORT_DIR}/src/machine_wdt.c
     ${MICROPY_PORT_DIR}/src/machine_i2s.c
 )
@@ -169,6 +170,7 @@ ameba_list_append(private_sources
     ${MICROPY_BOARD_DIR}/mp_wificfg.c
     modsocket.c
     network_wlan.c
+    network_lan.c
     network_common.c
     machine_pin.c
     machine_timer.c

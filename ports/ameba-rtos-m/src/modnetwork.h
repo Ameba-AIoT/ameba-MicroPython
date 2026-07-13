@@ -5,4 +5,5 @@
 #ifndef MICROPY_INCLUDED_AMEBA_MODNETWORK_H
 #define MICROPY_INCLUDED_AMEBA_MODNETWORK_H
 #include "network_wlan.h"
+#include "network_lan.h"
 #endif /* MICROPY_INCLUDED_AMEBA_MODNETWORK_H */
