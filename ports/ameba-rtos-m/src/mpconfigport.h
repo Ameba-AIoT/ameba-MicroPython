@@ -153,6 +153,18 @@
 #define MICROPY_PY_MACHINE_I2C_TARGET_MAX       (2)
 #define MICROPY_PY_MACHINE_I2C_TARGET_HARD_IRQ  (1)
 
+// machine.CAN -- AmebaGreen2 (RTL8711F) has 2 CAN 2.0 controllers; AmebaDplus
+// has no CAN hardware at all, so the class doesn't exist there (compile-time
+// gate, matching this port's convention for board-exclusive peripherals).
+#if defined(CONFIG_AMEBAGREEN2)
+#define MICROPY_PY_MACHINE_CAN                (1)
+#define MICROPY_PY_MACHINE_CAN_INCLUDEFILE    "src/machine_can.c"
+#define MICROPY_HW_NUM_CAN                    (2)
+#define MICROPY_HW_ENABLE_FDCAN               (0)
+#define MICROPY_HW_CAN_IS_RESERVED(can_num)   (0)
+#else
+#define MICROPY_PY_MACHINE_CAN                (0)
+#endif
 
 #define MICROPY_PY_NETWORK (1)
 #define MICROPY_PY_NETWORK_WLAN                        (1)

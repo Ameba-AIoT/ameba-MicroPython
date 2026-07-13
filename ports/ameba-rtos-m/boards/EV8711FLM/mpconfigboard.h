@@ -34,5 +34,15 @@
 #define MICROPY_HW_I2C0_SDA  (PA_17)   // J20 pin 33
 #define MICROPY_HW_I2C1_SCL  (PB_6)    // J20 pin 5
 #define MICROPY_HW_I2C1_SDA  (PB_7)    // J20 pin 7
+// machine.CAN(0/1) TX/RX pins (fixed -- the generic machine.CAN constructor
+// has no pin kwargs, so these cannot be overridden per instance). Chosen
+// from Table 3-1 of UG1002 (EV721FL0 EVB User Guide v1.2): all four land on
+// header J20, populated with 0-ohm resistors by default (not "default NC"),
+// and don't collide with any other on-board default (UART1/SPI0/I2C0) or
+// with tests/target_wiring_EV8711FLM.py's PWM loopback pins (PA14/PA15).
+#define MICROPY_HW_CAN0_TX   (PB_12)  // J20 pin 19
+#define MICROPY_HW_CAN0_RX   (PB_13)  // J20 pin 37
+#define MICROPY_HW_CAN1_TX   (PB_14)  // J20 pin 18
+#define MICROPY_HW_CAN1_RX   (PB_15)  // J20 pin 22
 
 #endif // MICROPY_INCLUDED_AMEBA_BOARDS_EV8711FLM_MPCONFIGBOARD_H

@@ -111,6 +111,7 @@ set(MICROPY_SOURCE_QSTR
     ${MICROPY_PORT_DIR}/src/machine_adc.c
     ${MICROPY_PORT_DIR}/src/machine_pwm.c
     ${MICROPY_PORT_DIR}/src/machine_rtc.c
+    ${MICROPY_PORT_DIR}/src/machine_can.c
     ${MICROPY_PORT_DIR}/src/machine_wdt.c
     ${MICROPY_PORT_DIR}/src/machine_i2s.c
 )
@@ -253,6 +254,16 @@ ameba_list_append(private_compile_options
 set_source_files_properties(
     ${MICROPY_DIR}/extmod/machine_i2s.c
     PROPERTIES COMPILE_OPTIONS "-O0"
+)
+
+# Upstream extmod/machine_can.c's allowed_args[] table (machine_can_init_helper)
+# omits the trailing designated initializer, which the SDK's -Werror=missing-
+# field-initializers rejects. We may not edit the upstream file, so downgrade
+# just that one warning for just that one file (scoped; upstream source
+# untouched).
+set_source_files_properties(
+    ${MICROPY_DIR}/extmod/machine_can.c
+    PROPERTIES COMPILE_OPTIONS "-Wno-error=missing-field-initializers"
 )
 
 # Upstream drivers/bus/softspi.c (machine.SoftSPI backend) uses the "inline

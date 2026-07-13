@@ -156,6 +156,15 @@ soft_reset_exit:
     machine_rtc_deinit_all();
     #endif
 
+    #if MICROPY_PY_MACHINE_CAN
+    // Disable any live CAN controllers before the GC heap is swept -- the
+    // rooted machine_can_objs[] (MP_STATE_PORT) survives soft reset with the
+    // vendor ISR still registered and would otherwise dispatch through swept
+    // Python state on the next CAN interrupt.
+    extern void machine_can_deinit_all(void);
+    machine_can_deinit_all();
+    #endif
+
     gc_sweep_all();
     #if MICROPY_PY_THREAD
     mp_thread_deinit();
