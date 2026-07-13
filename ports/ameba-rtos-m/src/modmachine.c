@@ -36,6 +36,7 @@
 #include "ameba_backup_reg.h"  // BKUP_Set / BKUP_BIT_UARTBURN_BOOT for bootloader()
 #include "machine_pin.h"
 #include "machine_timer.h"
+#include "machine_sdcard.h"
 #include "modmachine.h"
 
 // Reset cause values, aligned with esp32 for cross-port compatibility.
@@ -58,6 +59,18 @@ typedef enum {
 // MP_MACHINE_WAKE_IDLE/SLEEP/DEEPSLEEP come from modmachine.h (included
 // above) so that machine_rtc.c's RTC.irq(wake=...) can see the same values.
 
+// machine.SDCard is the first MICROPY_PY_MACHINE_EXTRA_GLOBALS entry that's
+// conditionally compiled -- MICROPY_PY_MACHINE_EXTRA_GLOBALS itself is one
+// multi-line #define, so a bare #if can't sit inside its continuation.
+// This sub-macro expands to either one real entry or nothing, and gets
+// referenced as the last line of the list below.
+#if MICROPY_PY_MACHINE_SDCARD
+#define MICROPY_PY_MACHINE_SDCARD_GLOBAL_ENTRY \
+    { MP_ROM_QSTR(MP_QSTR_SDCard), MP_ROM_PTR(&machine_sdcard_type) },
+#else
+#define MICROPY_PY_MACHINE_SDCARD_GLOBAL_ENTRY
+#endif
+
 #define MICROPY_PY_MACHINE_EXTRA_GLOBALS \
     { MP_ROM_QSTR(MP_QSTR_Pin),             MP_ROM_PTR(&machine_pin_type) }, \
     { MP_ROM_QSTR(MP_QSTR_Timer),           MP_ROM_PTR(&machine_timer_type) }, \
@@ -73,6 +86,7 @@ typedef enum {
     { MP_ROM_QSTR(MP_QSTR_IDLE),            MP_ROM_INT(MP_MACHINE_WAKE_IDLE) }, \
     { MP_ROM_QSTR(MP_QSTR_SLEEP),           MP_ROM_INT(MP_MACHINE_WAKE_SLEEP) }, \
     { MP_ROM_QSTR(MP_QSTR_DEEPSLEEP),       MP_ROM_INT(MP_MACHINE_WAKE_DEEPSLEEP) }, \
+    MICROPY_PY_MACHINE_SDCARD_GLOBAL_ENTRY
 
 static mp_obj_t mp_machine_unique_id(void) {
     // EFUSE_GetUUID returns a 4-byte chip UUID via sys_api.h -> ... -> ameba_chipinfo.h.

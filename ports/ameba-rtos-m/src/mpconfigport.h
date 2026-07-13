@@ -166,6 +166,17 @@
 #define MICROPY_PY_MACHINE_CAN                (0)
 #endif
 
+// machine.SDCard -- AmebaGreen2 (RTL8711F) has a real SD host controller
+// (SDIO_HOST, ameba_sd.c); AmebaDplus's only SDIO-related block
+// (ameba_sdio.c) is an SDIO *device* (iNIC) mode, not a card-reader role,
+// so the class doesn't exist there (compile-time gate, matching this
+// port's convention for board-exclusive peripherals).
+#if defined(CONFIG_AMEBAGREEN2)
+#define MICROPY_PY_MACHINE_SDCARD (1)
+#else
+#define MICROPY_PY_MACHINE_SDCARD (0)
+#endif
+
 // network.LAN -- AmebaGreen2 (RTL8711F) has an RMII MAC + on-board RTL8201F
 // PHY; AmebaDplus has no RMII hardware at all, so the class doesn't exist
 // there (compile-time gate, matching this port's convention). network_lan.c's
