@@ -231,33 +231,34 @@ Key port files:
 Phases are listed in implementation order (the `Phase` number is a stable
 identifier, not the sequence).
 
-| Phase | Content                                                        | Status        |
-|:-----:|----------------------------------------------------------------|:-------------:|
-| 0     | Code audit (API residue scan, QSTR completeness)               | Done          |
-| 1     | `network` — Wi-Fi STA / AP / scan                              | Done          |
-| 1.5   | Flash FS layout fix (`ameba.Flash` + VFS)                      | Done          |
-| 2     | `machine` — `unique_id()` / `reset_cause()`                    | Done          |
-| 3     | `machine.Pin` (digital read/write + IRQ)                       | Done          |
-| 4     | `machine.UART` (+ IRQ / sendbreak)                             | Done          |
-| 5     | `machine.SPI` / `SoftSPI`                                      | Done          |
-| 6     | `machine.I2C` / `SoftI2C`                                      | Done          |
-| 7     | `machine.ADC`                                                  | Done          |
-| 8     | `machine.PWM`                                                  | Done          |
-| 9     | `machine.Timer`                                                | Done          |
-| 10    | `machine.RTC`                                                  | Done          |
-| 11    | `machine.WDT`                                                  | Done          |
-| 13    | `machine.I2S`                                                  | Done          |
-| 16    | `ameba.Partition` / OTA                                        | Done          |
-| 20    | `machine.lightsleep` / `deepsleep` / `wake_reason`             | Done          |
-| 21    | `SoftI2C`, `SoftSPI`, `time_pulse_us`                          | Done          |
-| 22    | `machine.bitstream` (WS2812/NeoPixel), LEDC hardware DMA backend | Done        |
-| 23    | `machine.UART.irq`                                             | Done          |
-| 24    | `machine.UART.sendbreak`                                       | Done          |
-| 27    | `machine.bootloader()`                                         | Done          |
-| 28    | `os.dupterm` / WebREPL                                         | Done          |
-| 31    | `machine.I2CTarget` (I2C slave)                                | Done          |
-| 14    | `machine.SDCard`                                               | Planned       |
-| 15    | USB CDC REPL                                                   | Planned       |
-| 12    | Bluetooth BLE (GAP / GATT)                                     | Planned       |
+| Phase | Content                                                        | PKE8721DAF              | EV8711FLM               |
+|:-----:|-----------------------------------------------------------------|:-----------------------:|:-----------------------:|
+| 0     | Code audit (API residue scan, QSTR completeness)               | Done                    | Done                    |
+| 1     | `network` — Wi-Fi STA / AP / scan                              | Done                    | Done                    |
+| 1.5   | Flash FS layout fix (`ameba.Flash` + VFS)                      | Done                    | Done                    |
+| 2     | `machine` — `unique_id()` / `reset_cause()`                    | Done                    | Done                    |
+| 3     | `machine.Pin` (digital read/write + IRQ)                       | Done                    | Done                    |
+| 4     | `machine.UART` (+ IRQ / sendbreak)                              | Done                    | Done                    |
+| 5     | `machine.SPI` / `SoftSPI`                                      | Done                    | Done                    |
+| 6     | `machine.I2C` / `SoftI2C`                                      | Done                    | Done                    |
+| 7     | `machine.ADC`                                                  | Done                    | Done                    |
+| 8     | `machine.PWM`                                                  | Done                    | Done                    |
+| 9     | `machine.Timer`                                                | Done                    | Done                    |
+| 10    | `machine.RTC` (+ `alarm` / `irq`)                              | Done                    | Done                    |
+| 11    | `machine.WDT`                                                  | Done                    | Done                    |
+| 13    | `machine.I2S`                                                  | Done                    | Done                    |
+| 14    | `machine.SDCard`                                               | N/A (no SD host controller) | Done                |
+| 16    | `ameba.Partition` / OTA                                        | Done                    | Done                    |
+| 20    | `machine.lightsleep` / `deepsleep` / `wake_reason`             | Done                    | Done                    |
+| 21    | `time_pulse_us`                                                | Done                    | Done                    |
+| 22    | `machine.bitstream` (WS2812/NeoPixel), LEDC hardware DMA backend | Done                  | Done                    |
+| 27    | `machine.bootloader()`                                         | Done                    | Done                    |
+| 28    | `os.dupterm` / WebREPL                                         | Done                    | Done                    |
+| 31    | `machine.I2CTarget` (I2C slave)                                 | Done                    | Done                    |
+| 33    | `machine.CAN`                                                  | N/A (no CAN controller) | Done                    |
+| 34    | `network.LAN` (Ethernet)                                       | N/A (no RMII MAC)       | Done                    |
+| 15    | USB CDC REPL                                                   | Planned                 | Planned                 |
+| 12    | Bluetooth BLE (GAP / GATT)                                     | Planned                 | Planned                 |
 
-*Done* means implementation merged and verified on PKE8721DAF hardware.
+*Done* means implementation merged and verified on that board's hardware.
+*N/A* means the SoC does not have the required hardware for that feature.

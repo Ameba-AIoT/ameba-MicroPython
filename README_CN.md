@@ -223,33 +223,34 @@ MicroPython/
 
 下表按**实现先后顺序**排列（`Phase` 编号是稳定标识，不代表顺序）。
 
-| Phase | 内容                                                           | 状态         |
-|:-----:|----------------------------------------------------------------|:------------:|
-| 0     | 代码审计（API 残留扫描、QSTR 完整性）                          | 完成         |
-| 1     | `network` — Wi-Fi STA / AP / scan                              | 完成         |
-| 1.5   | Flash FS 布局修正（`ameba.Flash` + VFS）                       | 完成         |
-| 2     | `machine` — `unique_id()` / `reset_cause()`                    | 完成         |
-| 3     | `machine.Pin`（数字读写 + IRQ）                                | 完成         |
-| 4     | `machine.UART`（含 IRQ / sendbreak）                           | 完成         |
-| 5     | `machine.SPI` / `SoftSPI`                                      | 完成         |
-| 6     | `machine.I2C` / `SoftI2C`                                      | 完成         |
-| 7     | `machine.ADC`                                                  | 完成         |
-| 8     | `machine.PWM`                                                  | 完成         |
-| 9     | `machine.Timer`                                                | 完成         |
-| 10    | `machine.RTC`                                                  | 完成         |
-| 11    | `machine.WDT`                                                  | 完成         |
-| 13    | `machine.I2S`                                                  | 完成         |
-| 16    | `ameba.Partition` / OTA                                        | 完成         |
-| 20    | `machine.lightsleep` / `deepsleep` / `wake_reason`             | 完成         |
-| 21    | `SoftI2C`、`SoftSPI`、`time_pulse_us`                          | 完成         |
-| 22    | `machine.bitstream`（WS2812/NeoPixel），LEDC 硬件 DMA 后端       | 完成       |
-| 23    | `machine.UART.irq`                                             | 完成         |
-| 24    | `machine.UART.sendbreak`                                       | 完成         |
-| 27    | `machine.bootloader()`                                         | 完成         |
-| 28    | `os.dupterm` / WebREPL                                         | 完成         |
-| 31    | `machine.I2CTarget`（I2C 从机）                                 | 完成         |
-| 14    | `machine.SDCard`                                               | 计划中       |
-| 15    | USB CDC REPL                                                   | 计划中       |
-| 12    | Bluetooth BLE（GAP / GATT）                                    | 计划中       |
+| Phase | 内容                                                           | PKE8721DAF               | EV8711FLM                |
+|:-----:|----------------------------------------------------------------|:------------------------:|:------------------------:|
+| 0     | 代码审计（API 残留扫描、QSTR 完整性）                          | 完成                     | 完成                     |
+| 1     | `network` — Wi-Fi STA / AP / scan                              | 完成                     | 完成                     |
+| 1.5   | Flash FS 布局修正（`ameba.Flash` + VFS）                       | 完成                     | 完成                     |
+| 2     | `machine` — `unique_id()` / `reset_cause()`                    | 完成                     | 完成                     |
+| 3     | `machine.Pin`（数字读写 + IRQ）                                | 完成                     | 完成                     |
+| 4     | `machine.UART`（含 IRQ / sendbreak）                           | 完成                     | 完成                     |
+| 5     | `machine.SPI` / `SoftSPI`                                      | 完成                     | 完成                     |
+| 6     | `machine.I2C` / `SoftI2C`                                      | 完成                     | 完成                     |
+| 7     | `machine.ADC`                                                  | 完成                     | 完成                     |
+| 8     | `machine.PWM`                                                  | 完成                     | 完成                     |
+| 9     | `machine.Timer`                                                | 完成                     | 完成                     |
+| 10    | `machine.RTC`（含 `alarm` / `irq`）                            | 完成                     | 完成                     |
+| 11    | `machine.WDT`                                                  | 完成                     | 完成                     |
+| 13    | `machine.I2S`                                                  | 完成                     | 完成                     |
+| 14    | `machine.SDCard`                                               | 不适用（无 SD 主控制器）  | 完成                     |
+| 16    | `ameba.Partition` / OTA                                        | 完成                     | 完成                     |
+| 20    | `machine.lightsleep` / `deepsleep` / `wake_reason`             | 完成                     | 完成                     |
+| 21    | `time_pulse_us`                                                | 完成                     | 完成                     |
+| 22    | `machine.bitstream`（WS2812/NeoPixel），LEDC 硬件 DMA 后端       | 完成                   | 完成                     |
+| 27    | `machine.bootloader()`                                         | 完成                     | 完成                     |
+| 28    | `os.dupterm` / WebREPL                                         | 完成                     | 完成                     |
+| 31    | `machine.I2CTarget`（I2C 从机）                                 | 完成                     | 完成                     |
+| 33    | `machine.CAN`                                                  | 不适用（无 CAN 控制器）   | 完成                     |
+| 34    | `network.LAN`（Ethernet）                                      | 不适用（无 RMII MAC）     | 完成                     |
+| 15    | USB CDC REPL                                                   | 计划中                   | 计划中                   |
+| 12    | Bluetooth BLE（GAP / GATT）                                    | 计划中                   | 计划中                   |
 
-*完成* 指实现已合入并在 PKE8721DAF 硬件上验证通过。
+*完成* 指实现已合入并在对应板子的硬件上验证通过。
+*不适用* 指该 SoC 没有实现这个功能所需的硬件。
