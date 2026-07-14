@@ -1,0 +1,50 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [PKE8721DAF, EV8711FLM]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/rtk-toolchain
+          key: toolchain-${{ hashFiles('ameba-rtos/env.sh', 'ameba-rtos/cmake/toolchain/*.cmake') }}
+
+      - name: Cache venv
+        uses: actions/cache@v4
+        with:
+          path: ameba-rtos/.venv
+          key: venv-${{ hashFiles('ameba-rtos/tools/requirements.txt') }}
+
+      - name: Build ${{ matrix.board }}
+        run: |
+          source ameba-rtos/env.sh
+          cd ports/ameba-rtos-m
+          make BOARD=${{ matrix.board }}
+
+      - name: Verify firmware produced
+        run: test -s ports/ameba-rtos-m/build_*/firmware.bin
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.board }}
+          path: ports/ameba-rtos-m/build_*/build.log
+          if-no-files-found: ignore
