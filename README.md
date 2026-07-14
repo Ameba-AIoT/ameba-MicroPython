@@ -114,6 +114,15 @@ cd ports/ameba-rtos-m
 python ../../ameba-rtos/ameba.py flash -p /dev/ttyUSB0 -dev RTL8721Dx
 ```
 
+#### Flashing a pre-built release (no SDK required)
+
+- **[AmebaFlash](https://aiot.realmcu.com/download/latest/Tools/AmebaFlash.zip)**
+  (CLI, cross-platform)
+- **[Image Tool](https://aiot.realmcu.com/download/latest/Tools/ImageTool.zip)**
+  (GUI, Windows)
+
+When flashing a release firmware, use start address `0x08000000`.
+
 Then connect over LOGUART with any serial terminal:
 
 ```bash

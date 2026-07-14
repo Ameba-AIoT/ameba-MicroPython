@@ -109,6 +109,15 @@ cd ports/ameba-rtos-m
 python ../../ameba-rtos/ameba.py flash -p /dev/ttyUSB0 -dev RTL8721Dx
 ```
 
+#### 烧录预编译的 release 固件（不需要 SDK）
+
+- **[AmebaFlash](https://aiot.realmcu.com/download/latest/Tools/AmebaFlash.zip)**
+  （命令行，跨平台）
+- **[Image Tool](https://aiot.realmcu.com/download/latest/Tools/ImageTool.zip)**
+  （图形界面，Windows）
+
+烧录 release 固件时，起始地址填 `0x08000000`。
+
 然后通过 LOGUART 用任意串口终端连接：
 
 ```bash
