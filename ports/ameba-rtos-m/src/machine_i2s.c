@@ -572,27 +572,49 @@ static void mp_machine_i2s_deinit(machine_i2s_obj_t *self) {
         // its own, so abort it (force-stop mid-block), then free the channel
         // allocated by AUDIO_SP_LLPTxGDMA_Init / LLPRxGDMA_Init.
         if (self->gdma_initted) {
+            #if defined(CONFIG_AMEBADPLUS)
+            // Wait for the GDMA channel to go INACTIVE before aborting it.
+            //
+            // GDMA_Abort() internally suspends the channel and then busy-polls
+            // (500 iterations, no per-iteration delay -> only tens of us) for
+            // either CH_EN to clear or the INACTIVE bit to assert.  For a TX
+            // channel the destination is the SPORT, and the channel's final
+            // in-flight burst can only retire once the SPORT TX FIFO drains a
+            // slot at the audio bit-clock rate (up to ~1 ms).  That is far
+            // longer than GDMA_Abort's poll window, so on TX it times out,
+            // GDMA_Resume()s, and returns FALSE leaving CH_EN set.  The port
+            // used to ignore that return value; a later same-id RX then reused
+            // the still-live GDMA channel and readinto() deadlocked forever
+            // (the historical "TX-then-RX on one SPORT hangs" bug, AmebaDplus
+            // only -- AmebaGreen2 has never reproduced it and uses a
+            // differently-named GDMA register layout, so this workaround is
+            // scoped to CONFIG_AMEBADPLUS rather than applied unconditionally).
+            //
+            // The SPORT is still clocked at this point (it is stopped further
+            // below), so its FIFO keeps draining.  Suspend the channel and poll
+            // INACTIVE ourselves with a generous bound; measured assert time is
+            // < 1 ms at 44.1 kHz.  GDMA_Abort() below then sees INACTIVE already
+            // set and disables the channel cleanly (CH_EN -> 0).  For an RX
+            // channel the destination is memory, which always accepts, so
+            // INACTIVE asserts immediately and the loop exits on the first read.
+            GDMA_TypeDef *gdma = (GDMA_TypeDef *)GDMA0_REG_BASE;
+            u8 dch = self->gdma_struct.GDMA_ChNum;
+            GDMA_Suspend(self->gdma_struct.GDMA_Index, dch);
+            for (int i = 0; i < 20 && !(gdma->CH[dch].CFG_LOW & BIT_CFGx_L_INACTIVE); i++) {
+                mp_hal_delay_ms(1);
+            }
+            #endif
             GDMA_Abort(self->gdma_struct.GDMA_Index, self->gdma_struct.GDMA_ChNum);
             GDMA_ClearINT(self->gdma_struct.GDMA_Index, self->gdma_struct.GDMA_ChNum);
             GDMA_ChnlFree(self->gdma_struct.GDMA_Index, self->gdma_struct.GDMA_ChNum);
             self->gdma_initted = false;
         }
 
-        // Stop SPORT.
+        // Stop SPORT.  This must come after the GDMA drain-wait above, which
+        // relies on the SPORT clock still running to drain the TX FIFO.
         AUDIO_SP_TXStart(self->i2s_id, DISABLE);
         AUDIO_SP_RXStart(self->i2s_id, DISABLE);
         AUDIO_SP_DmaCmd(self->i2s_id, DISABLE);
-
-        // KNOWN ISSUE (2026-07-11): constructing an RX instance immediately
-        // after deinit()ing a TX instance on the same SPORT hangs readinto()
-        // forever (no timeout in the shared extmod ring-buffer wait loop, so
-        // it requires a hardware reset). Reordering this teardown to stop
-        // SPORT/DMA before freeing the GDMA channel (matching the SDK's own
-        // audio_deinit() example order) did not fix it, nor did unconditionally
-        // calling AUDIO_SP_TXStart(ENABLE) before AUDIO_SP_RXStart(ENABLE) in
-        // start_transfer() (RX-only from a fresh boot works fine either way --
-        // only the TX-then-RX transition on one SPORT instance hangs). Root
-        // cause not found; see findings.md.
 
         // De-register and reset SPORT.
         AUDIO_SP_Unregister(self->i2s_id, SP_DIR_TX);
