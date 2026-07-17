@@ -155,6 +155,21 @@ static mp_obj_t machine_rtc_alarm(size_t n_args, const mp_obj_t *pos_args, mp_ma
 
     if (mp_obj_is_int(args[ARG_time].u_obj)) {
         mp_int_t offset_ms = mp_obj_get_int(args[ARG_time].u_obj);
+        // The hardware alarm_t has whole-second resolution only (yday/hour/
+        // min/sec fields, no sub-second field -- see rtc_alarm_target_from_
+        // timestamp above). machine_rtc_alarm_irq_handler()'s repeat re-arm
+        // advances alarm_target by (alarm_interval_ms / 1000) seconds each
+        // fire; for offset_ms < 1000 that division truncates to 0, so the
+        // "re-armed" target never actually moves into the future. Confirmed
+        // on hardware: the RTC alarm condition (target <= now) then stays
+        // permanently true, so the vendor ISR re-fires continuously (observed
+        // 600 fires within ~450ms) until the interrupt is somehow left
+        // disabled -- not just imprecise, an unrecoverable storm-then-stuck
+        // state. Reject rather than silently produce that: there's no
+        // representable "sub-second repeat" on this hardware alarm.
+        if (args[ARG_repeat].u_bool && offset_ms < 1000) {
+            mp_raise_ValueError(MP_ERROR_TEXT("repeat alarm requires time >= 1000ms (hardware alarm has 1s resolution)"));
+        }
         rtc_alarm_target_from_offset_ms(now, offset_ms, &a);
         self->alarm_target = now + (time_t)(offset_ms / 1000);
         self->alarm_repeat = args[ARG_repeat].u_bool;
