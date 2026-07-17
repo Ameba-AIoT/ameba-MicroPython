@@ -445,21 +445,28 @@ static mp_uint_t machine_can_port_irq_flags(machine_can_obj_t *self) {
     return flags;
 }
 
-// KNOWN OPEN ISSUE (found during Phase 1 on-target verification, root cause
-// NOT yet found -- see findings.md [P1] "recv() 在拒绝态发送后失效"):
-// if any frame is transmitted while every filter slot is still set to this
-// reject-everything sentinel (i.e. before the first machine_can_port_set_filter()/
-// set_filters() call after init), CAN0's receive path silently stops
-// delivering frames to recv() even after a later set_filters() call opens a
-// matching filter -- get_counters().rx_pending stays 0, so the FIFO itself
-// genuinely never receives anything afterwards, this isn't a read-timing
-// race. Reproduces with a single CAN controller, independent of whether a
-// second CAN() instance was ever constructed. Suspected: the RX FIFO's
-// internal write-pointer/state machine may need an explicit reset after a
-// filter-less-match event that this driver doesn't currently perform, but
-// no register-level documentation confirms this -- unconfirmed. Workaround
-// until root-caused: call set_filters() to open the desired filter BEFORE
-// the first send() on that controller.
+// FIXED (was: KNOWN OPEN ISSUE, root cause found after reading the vendor's
+// CAN_RAM_CS register documentation) -- see findings.md [P1] "recv() 在拒绝态
+// 发送后失效": if any frame is transmitted while every filter slot is still
+// set to the reject-everything sentinel, CAN0's receive path used to
+// silently stop delivering frames to recv() even after a later
+// set_filters() call opened a matching filter.
+//
+// Root cause: ameba_can.c's CAN_WriteMsg() (used by send()) and
+// CAN_SetRxMsgBuf() (used here) share the same CAN_RAM_CS staging register
+// (offset 0x348) as their RAM-exchange window. CAN_WriteMsg() explicitly
+// sets CAN_BIT_RAM_RXTX (bit 5) to mark the buffer TX, but CAN_SetRxMsgBuf()
+// requests a CS-field exchange (CAN_BIT_RAM_ACC_CS in the command word)
+// without ever writing CAN_RAM_CS itself -- so it silently commits whatever
+// value the register last held. A send() right before set_filters() leaves
+// RXTX=1 sitting in that shared register, which then gets latched into
+// message buffer 12 (CAN_RX_FILTER_BASE_IDX), flipping the FIFO's read slot
+// from RX to TX -- the message processor stops scanning it for incoming
+// frames entirely, matching the observed "rx_pending stays 0 forever".
+// Clearing RXTX in CAN_RAM_CS immediately before each CAN_SetRxMsgBuf() call
+// closes the window; this is a vendor driver gap (ameba-rtos is a pinned
+// read-only submodule per CLAUDE.md), so the fix lives here instead of
+// patching CAN_SetRxMsgBuf() itself.
 static void machine_can_port_clear_filters(machine_can_obj_t *self) {
     struct machine_can_port *port = self->port;
     for (int i = 0; i < CAN_HW_MAX_FILTER; i++) {
@@ -476,6 +483,7 @@ static void machine_can_port_clear_filters(machine_can_obj_t *self) {
         rx.ExtId = 0;
         rx.ID_MASK = CAN_EXT_ID_MASK;
         rx.MsgBufferIdx = CAN_RX_FILTER_BASE_IDX + i;
+        port->CANx->CAN_RAM_CS &= ~CAN_BIT_RAM_RXTX;
         CAN_SetRxMsgBuf(port->CANx, &rx);
     }
 }
@@ -501,6 +509,7 @@ static void machine_can_port_set_filter(machine_can_obj_t *self, int filter_idx,
     }
     rx.ID_MASK = mask;
     rx.MsgBufferIdx = CAN_RX_FILTER_BASE_IDX + filter_idx;
+    self->port->CANx->CAN_RAM_CS &= ~CAN_BIT_RAM_RXTX;
     CAN_SetRxMsgBuf(self->port->CANx, &rx);
 }
 
