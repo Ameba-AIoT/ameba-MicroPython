@@ -203,7 +203,7 @@
 #define MICROPY_PY_WEBREPL                  (1)
 #define MICROPY_PY_ONEWIRE                  (1)
 #define MICROPY_PY_MACHINE_DHT_READINTO     (1)
-#define MICROPY_PY_SOCKET_EVENTS            (0)
+#define MICROPY_PY_SOCKET_EVENTS            (MICROPY_PY_WEBREPL)
 
 // hashlib/cryptolib — backed by mbedtls already linked for SSL
 #define MICROPY_PY_HASHLIB_SHA256           (1)
@@ -259,6 +259,7 @@ typedef long mp_off_t;
 #define MICROPY_EVENT_POLL_HOOK \
     do { \
         mp_handle_pending(MP_HANDLE_PENDING_CALLBACKS_AND_EXCEPTIONS); \
+        MICROPY_PY_SOCKET_EVENTS_HANDLER \
         MP_THREAD_GIL_EXIT(); \
         ulTaskNotifyTake(pdFALSE, 1); \
         MP_THREAD_GIL_ENTER(); \
@@ -268,6 +269,7 @@ typedef long mp_off_t;
 #define MICROPY_EVENT_POLL_HOOK \
     do { \
         mp_handle_pending(MP_HANDLE_PENDING_CALLBACKS_AND_EXCEPTIONS); \
+        MICROPY_PY_SOCKET_EVENTS_HANDLER \
         MICROPY_PY_WAIT_FOR_INTERRUPT; \
     } while (0);
 #endif

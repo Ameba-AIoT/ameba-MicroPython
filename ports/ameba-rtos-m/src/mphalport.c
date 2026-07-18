@@ -207,7 +207,7 @@ void mp_hal_delay_ms(mp_uint_t ms) {
     uint64_t t0 = mp_hal_ticks_us();
     for (;;) {
         mp_handle_pending(true);
-        //MICROPY_PY_SOCKET_EVENTS_HANDLER
+        MICROPY_PY_SOCKET_EVENTS_HANDLER
         MP_THREAD_GIL_EXIT();
         uint64_t t1 = mp_hal_ticks_us();
         dt = t1 - t0;
