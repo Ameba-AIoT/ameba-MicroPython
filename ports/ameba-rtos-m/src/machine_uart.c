@@ -8,6 +8,7 @@
 #include "py/ringbuf.h"
 
 #include "serial_api.h"
+#include "serial_ex_api.h"
 #include "PinNames.h"
 #include "ameba_uart.h"
 #include "shared/runtime/mpirq.h"
@@ -28,6 +29,9 @@
 // Cap so that (rxbuf_len + 1) still fits the uint16_t ringbuf_t.size field
 // (avoids a silent wrap to 0 → division-by-zero in ringbuf_put/avail).
 #define UART_MAX_RXBUF        (8192)
+#define UART_DEFAULT_TXBUF    (256)
+#define UART_MIN_TXBUF        (32)
+#define UART_MAX_TXBUF        (8192)
 
 // Default UART pins — overridable per-board in mpconfigboard.h.
 // Fallback values match PKE8721DAF board spec (Table 10 NOTE):
@@ -62,22 +66,26 @@ typedef struct _machine_uart_obj_t {
     uint16_t      timeout;       // ms, total read timeout
     uint16_t      timeout_char;  // ms, inter-char timeout
     uint16_t      rxbuf_len;     // RX ringbuf capacity (excludes the +1 slot)
+    uint16_t      txbuf_len;     // TX ringbuf capacity (excludes the +1 slot)
     ringbuf_t     read_buffer;   // RX ringbuf, filled by ISR
+    ringbuf_t     write_buffer;  // TX ringbuf, drained into the HW FIFO by
+                                  // write()/uart_fill_tx_fifo()/the TxIrq handler
+    bool          tx_busy;       // true from write() until write_buffer *and*
+                                  // the HW FIFO have both drained (see
+                                  // uart_fill_tx_fifo() / machine_uart_irq_handler)
     bool          initialized;
     #if MICROPY_PY_MACHINE_UART_IRQ
     uint16_t      mp_irq_trigger;   // user-configured trigger mask
     uint16_t      mp_irq_flags;     // trigger flags from last ISR
     mp_irq_obj_t *mp_irq_obj;       // Python callback object
     #endif
-    #if defined(CONFIG_AMEBAGREEN2)
-    uint32_t      tx_done_at_us;    // mp_hal_ticks_us() deadline for flush(), see there
-    #endif
 } machine_uart_obj_t;
 
 static machine_uart_obj_t machine_uart_obj[UART_ID_COUNT];
 
-// GC root for the RX ring buffers (the static obj array is not GC-scanned).
+// GC roots for the RX/TX ring buffers (the static obj array is not GC-scanned).
 MP_REGISTER_ROOT_POINTER(void *machine_uart_rxbuf[UART_ID_COUNT]);
+MP_REGISTER_ROOT_POINTER(void *machine_uart_txbuf[UART_ID_COUNT]);
 
 #define MICROPY_PY_MACHINE_UART_CLASS_CONSTANTS \
     { MP_ROM_QSTR(MP_QSTR_IRQ_RX), MP_ROM_INT(UART_IRQ_RX) }, \
@@ -144,9 +152,9 @@ static void mp_machine_uart_print(const mp_print_t *print, mp_obj_t self_in, mp_
     int txn = (self->tx < PB_0) ? (int)self->tx : (int)(self->tx - PB_0);
     const char *rxp = (self->rx < PB_0) ? "PA" : "PB";
     int rxn = (self->rx < PB_0) ? (int)self->rx : (int)(self->rx - PB_0);
-    mp_printf(print, "UART(%u, baudrate=%u, bits=%u, parity=%s, stop=%u, tx=%s%d, rx=%s%d, rxbuf=%u, timeout=%u, timeout_char=%u)",
+    mp_printf(print, "UART(%u, baudrate=%u, bits=%u, parity=%s, stop=%u, tx=%s%d, rx=%s%d, rxbuf=%u, txbuf=%u, timeout=%u, timeout_char=%u)",
         self->uart_id, self->baudrate, self->bits, parity, self->stop,
-        txp, txn, rxp, rxn, self->rxbuf_len, self->timeout, self->timeout_char);
+        txp, txn, rxp, rxn, self->rxbuf_len, self->txbuf_len, self->timeout, self->timeout_char);
 }
 
 // ---- Task 3: RX ISR ----
@@ -157,6 +165,41 @@ static void mp_machine_uart_print(const mp_print_t *print, mp_obj_t self_in, mp_
 static inline UART_TypeDef *machine_uart_regs(machine_uart_obj_t *self) {
     return UART_DEV_TABLE[self->serial.uart_idx].UARTx;
 }
+
+// Push write_buffer into the HW TX FIFO, then (if there's more work left --
+// either bytes still queued because the FIFO filled up, or we still owe a
+// "truly done" notification) re-arm the one-shot TX-FIFO-empty interrupt.
+// Ameba's RUART_BIT_ETBEI is edge/one-shot (the SDK auto-disables it again
+// right before invoking machine_uart_irq_handler), unlike e.g. rp2's
+// level-triggered PL011 TXIM which can just stay enabled -- so this must be
+// re-armed on every refill, not only the first. Called from write() and from
+// the TxIrq branch below.
+static void uart_fill_tx_fifo(machine_uart_obj_t *self) {
+    while (serial_writable(&self->serial) && ringbuf_avail(&self->write_buffer) > 0) {
+        serial_putc(&self->serial, ringbuf_get(&self->write_buffer));
+    }
+    if (self->tx_busy) {
+        serial_irq_set(&self->serial, TxIrq, 1);
+    }
+}
+
+#if MICROPY_PY_MACHINE_UART_IRQ
+// Keep the RX FIFO trigger level at 1 byte (needed for IRQ_RX to fire once
+// per byte, per the official machine_uart_irq_rx.py contract) unless the user
+// is listening for IRQ_RXIDLE. Per the Ameba UART user manual, the receiver
+// timeout interrupt (ETOI/RUART_BIT_TIMEOUT_INT) only asserts while "at least
+// one character is in the Rx FIFO" that hasn't been read yet -- at the
+// default 1-byte trigger level, machine_uart_irq_handler's RxIrq branch drains
+// every byte the instant it arrives, so that precondition can never hold and
+// IRQ_RXIDLE can never fire. Raising the trigger level while IRQ_RXIDLE is
+// armed lets short bursts sit unread long enough for the timeout condition to
+// fire instead of being drained by IRQ_RX's own per-byte ERBI. Mirrors rp2's
+// uart_set_irq_level(); see machine_uart_set_rx_fifo_level() callers.
+static void machine_uart_set_rx_fifo_level(machine_uart_obj_t *self) {
+    SerialFifoLevel level = (self->mp_irq_trigger & UART_IRQ_RXIDLE) ? FifoLvQuarter : FifoLv1Byte;
+    serial_rx_fifo_level(&self->serial, level);
+}
+#endif
 
 // RX/TX interrupt: drain HW FIFO into the ring buffer and detect IRQ_RX /
 // IRQ_RXIDLE / IRQ_BREAK / IRQ_TXIDLE. ISR context — no mp_* calls.
@@ -233,14 +276,22 @@ static void machine_uart_irq_handler(uint32_t id, SerialIrq event) {
         }
         #endif
     } else if (event == TxIrq) {
-        #if MICROPY_PY_MACHINE_UART_IRQ
         // serial_api.c's uart_txdone_callback() already disabled RUART_BIT_ETBEI
-        // (one-shot) before calling us -- see mp_machine_uart_write(), which is
-        // what re-arms it for the next write.
-        if (self->mp_irq_trigger & UART_IRQ_TXIDLE) {
-            flags |= UART_IRQ_TXIDLE;
+        // (one-shot) before calling us.
+        if (ringbuf_avail(&self->write_buffer) > 0) {
+            // More queued than fit in the FIFO on the last fill -- not done,
+            // refill (which re-arms ETBEI) and keep quiet.
+            uart_fill_tx_fifo(self);
+        } else {
+            // write_buffer empty *and* this TxIrq fired, i.e. the FIFO itself
+            // just emptied too -- transmission genuinely finished.
+            self->tx_busy = false;
+            #if MICROPY_PY_MACHINE_UART_IRQ
+            if (self->mp_irq_trigger & UART_IRQ_TXIDLE) {
+                flags |= UART_IRQ_TXIDLE;
+            }
+            #endif
         }
-        #endif
     }
     #if MICROPY_PY_MACHINE_UART_IRQ
     if (flags && self->mp_irq_obj) {
@@ -255,7 +306,7 @@ static void machine_uart_irq_handler(uint32_t id, SerialIrq event) {
 static void mp_machine_uart_init_helper(machine_uart_obj_t *self, size_t n_args,
     const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_baudrate, ARG_bits, ARG_parity, ARG_stop, ARG_tx, ARG_rx,
-           ARG_timeout, ARG_timeout_char, ARG_rxbuf };
+           ARG_timeout, ARG_timeout_char, ARG_rxbuf, ARG_txbuf };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_baudrate, MP_ARG_INT, {.u_int = -1} },
         { MP_QSTR_bits,     MP_ARG_INT, {.u_int = -1} },
@@ -266,6 +317,7 @@ static void mp_machine_uart_init_helper(machine_uart_obj_t *self, size_t n_args,
         { MP_QSTR_timeout,      MP_ARG_INT, {.u_int = -1} },
         { MP_QSTR_timeout_char, MP_ARG_INT, {.u_int = -1} },
         { MP_QSTR_rxbuf,        MP_ARG_INT, {.u_int = -1} },
+        { MP_QSTR_txbuf,        MP_ARG_INT, {.u_int = -1} },
     };
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
@@ -279,6 +331,7 @@ static void mp_machine_uart_init_helper(machine_uart_obj_t *self, size_t n_args,
         self->timeout = 0;
         self->timeout_char = 0;
         self->rxbuf_len = UART_DEFAULT_RXBUF;
+        self->txbuf_len = UART_DEFAULT_TXBUF;
         self->tx = (self->uart_id == 1) ? MICROPY_HW_UART1_TX : MICROPY_HW_UART0_TX;
         self->rx = (self->uart_id == 1) ? MICROPY_HW_UART1_RX : MICROPY_HW_UART0_RX;
     }
@@ -328,6 +381,15 @@ static void mp_machine_uart_init_helper(machine_uart_obj_t *self, size_t n_args,
         }
         self->rxbuf_len = (uint16_t)v;
     }
+    if (args[ARG_txbuf].u_int >= 0) {
+        mp_int_t v = args[ARG_txbuf].u_int;
+        if (v < UART_MIN_TXBUF) {
+            v = UART_MIN_TXBUF;
+        } else if (v > UART_MAX_TXBUF) {
+            v = UART_MAX_TXBUF;
+        }
+        self->txbuf_len = (uint16_t)v;
+    }
 
     // Validate pins against the requested id BEFORE touching the SDK.
     if (!uart_tx_pin_ok(self->uart_id, (PinName)self->tx)) {
@@ -337,12 +399,15 @@ static void mp_machine_uart_init_helper(machine_uart_obj_t *self, size_t n_args,
         mp_raise_ValueError(MP_ERROR_TEXT("invalid rx pin for this UART"));
     }
 
-    // Allocate the new RX ring buffer BEFORE tearing down the old config, so an
-    // OOM here leaves a previously-initialized instance fully intact: the old
-    // buffer is still valid and still GC-rooted, and the (still-armed) RX ISR
-    // keeps writing into it safely (MicroPython's GC is non-moving).
+    // Allocate the new RX/TX ring buffers BEFORE tearing down the old config,
+    // so an OOM here leaves a previously-initialized instance fully intact:
+    // the old buffers are still valid and still GC-rooted, and the
+    // (still-armed) RX ISR keeps writing into read_buffer safely
+    // (MicroPython's GC is non-moving).
     size_t cap = (size_t)self->rxbuf_len + 1;
     uint8_t *buf = m_new(uint8_t, cap);
+    size_t tx_cap = (size_t)self->txbuf_len + 1;
+    uint8_t *tx_buf = m_new(uint8_t, tx_cap);
 
     // Tear down a previous configuration on re-init. No allocation past this
     // point, so the half-applied state below cannot be unwound by an exception.
@@ -361,14 +426,21 @@ static void mp_machine_uart_init_helper(machine_uart_obj_t *self, size_t n_args,
         // machine_uart_irq_txidle.py followed by machine_uart_tx.py.
         self->mp_irq_obj = NULL;
         self->mp_irq_trigger = 0;
+        self->tx_busy = false;
     }
 
-    // Switch to the new ring buffer and re-root it (drops the old root, if any).
+    // Switch to the new ring buffers and re-root them (drops the old roots, if any).
     self->read_buffer.buf = buf;
     self->read_buffer.size = cap;
     self->read_buffer.iget = 0;
     self->read_buffer.iput = 0;
     MP_STATE_PORT(machine_uart_rxbuf)[self->uart_id] = buf;
+
+    self->write_buffer.buf = tx_buf;
+    self->write_buffer.size = tx_cap;
+    self->write_buffer.iget = 0;
+    self->write_buffer.iput = 0;
+    MP_STATE_PORT(machine_uart_txbuf)[self->uart_id] = tx_buf;
 
     serial_init(&self->serial, (PinName)self->tx, (PinName)self->rx);
     serial_baud(&self->serial, self->baudrate);
@@ -377,10 +449,13 @@ static void mp_machine_uart_init_helper(machine_uart_obj_t *self, size_t n_args,
     // Register RX interrupt: id = uart_id so the ISR can find this instance.
     serial_irq_handler(&self->serial, machine_uart_irq_handler, self->uart_id);
     serial_irq_set(&self->serial, RxIrq, 1);
-
-    #if defined(CONFIG_AMEBAGREEN2)
-    self->tx_done_at_us = mp_hal_ticks_us();
+    #if MICROPY_PY_MACHINE_UART_IRQ
+    // mp_irq_trigger was just reset above (or is 0 on first init), so this
+    // sets the RX FIFO trigger level back to the IRQ_RX-friendly 1-byte
+    // default -- see machine_uart_set_rx_fifo_level().
+    machine_uart_set_rx_fifo_level(self);
     #endif
+
     self->initialized = true;
 }
 
@@ -416,17 +491,17 @@ static void mp_machine_uart_deinit(machine_uart_obj_t *self) {
     // next UART(id, ...) construction rather than freshly allocated -- clear
     // the IRQ registration too, not just the RX buffer, otherwise a stale
     // mp_irq_obj (already GC-swept, e.g. across a soft reset -- see
-    // machine_uart_deinit_all() below) can get invoked by a leftover armed
-    // TX one-shot interrupt (write() arms RUART_BIT_ETBEI for IRQ_TXIDLE and
-    // it only self-disables once it actually fires; if the FIFO was already
-    // empty at arm time it may never fire on its own) once the next UART
-    // instance's serial_init() re-enables the NVIC line, before that
-    // instance's own .irq() call has a chance to overwrite it. This is a
-    // real, reproducible hang: running machine_uart_irq_txidle.py (which
-    // leaves exactly this state behind) immediately before machine_uart_tx.py
-    // hangs the board.
+    // machine_uart_deinit_all() below) could get invoked by an ETBEI that was
+    // still pending from the previous instance once the next UART instance's
+    // serial_init() re-enables the NVIC line, before that instance's own
+    // .irq() call has a chance to overwrite it. (Historically this was easy
+    // to hit because write() armed ETBEI *after* fully draining write_buffer
+    // by itself -- often when the FIFO was already empty, so it could never
+    // self-fire; uart_fill_tx_fifo() no longer arms on an already-empty FIFO,
+    // but tx_busy is still reset here as cheap defense-in-depth.)
     self->mp_irq_obj = NULL;
     self->mp_irq_trigger = 0;
+    self->tx_busy = false;
 }
 
 // Called from the port soft-reset path (mp_main.c) BEFORE gc_sweep_all(): the RX
@@ -445,11 +520,16 @@ void machine_uart_deinit_all(void) {
         self->read_buffer.size = 0;
         self->read_buffer.iget = 0;
         self->read_buffer.iput = 0;
+        self->write_buffer.buf = NULL;
+        self->write_buffer.size = 0;
+        self->write_buffer.iget = 0;
+        self->write_buffer.iput = 0;
         // mp_irq_obj points into the GC heap that's about to be swept -- see
         // mp_machine_uart_deinit() for why this must be cleared, not just RX
         // state.
         self->mp_irq_obj = NULL;
         self->mp_irq_trigger = 0;
+        self->tx_busy = false;
     }
 }
 
@@ -465,10 +545,10 @@ static bool mp_machine_uart_txdone(machine_uart_obj_t *self) {
     if (!self->initialized) {
         return false;
     }
-    // Blocking write() pushes each byte into the FIFO as space frees up, so by
-    // the time write() returns the data is queued. Report ready when the FIFO
-    // can accept more (best-effort; mbed serial exposes no TX-empty flag).
-    return serial_writable(&self->serial) != 0;
+    // tx_busy is cleared by the TxIrq handler only once write_buffer *and*
+    // the HW FIFO have both drained -- see uart_fill_tx_fifo()/
+    // machine_uart_irq_handler().
+    return !self->tx_busy;
 }
 
 // ---- Task 4: read with timeout ----
@@ -501,48 +581,48 @@ static mp_uint_t mp_machine_uart_read(mp_obj_t self_in, void *buf_in, mp_uint_t 
     return size;
 }
 
-// ---- Task 5: blocking write ----
+// ---- Task 5: async write (queues to write_buffer, drained by TxIrq) ----
 
+// Queues data into write_buffer and returns as soon as it's queued -- it does
+// NOT wait for the data to actually leave the wire (use flush()/txdone() for
+// that). This matches the upstream contract (e.g. rp2, esp32) and is what
+// machine_uart_irq_txidle.py's timing model assumes: the previous
+// byte-by-byte blocking implementation stayed inside write() for almost the
+// entire transmission, so by the time it returned and armed the one-shot TX
+// interrupt, the FIFO had *already* drained -- IRQ_TXIDLE fired immediately
+// instead of asynchronously near the end of transmission, scrambling the
+// expected output order (confirmed against the recorded .out/.exp mismatch).
 static mp_uint_t mp_machine_uart_write(mp_obj_t self_in, const void *buf_in, mp_uint_t size, int *errcode) {
     machine_uart_obj_t *self = MP_OBJ_TO_PTR(self_in);
     if (!self->initialized) {
         *errcode = MP_EINVAL;
         return MP_STREAM_ERROR;
     }
+    if (size == 0) {
+        return 0;
+    }
     const uint8_t *src = buf_in;
-    for (size_t i = 0; i < size; i++) {
-        // Wait (cooperatively) until the TX FIFO can accept a byte.
-        while (!serial_writable(&self->serial)) {
+    size_t i = 0;
+
+    // Queue as many bytes as fit without blocking.
+    while (i < size && ringbuf_free(&self->write_buffer) > 0) {
+        ringbuf_put(&self->write_buffer, src[i]);
+        i++;
+    }
+    self->tx_busy = true;
+    uart_fill_tx_fifo(self);
+
+    // write_buffer was smaller than `size` -- feed the rest in as room frees
+    // up (mirrors rp2's mp_machine_uart_write()), cooperatively, no timeout
+    // (this port has never had a write()-side timeout).
+    while (i < size) {
+        while (ringbuf_free(&self->write_buffer) == 0) {
             mp_event_handle_nowait();
         }
-        serial_putc(&self->serial, src[i]);
+        ringbuf_put(&self->write_buffer, src[i]);
+        i++;
+        uart_fill_tx_fifo(self);
     }
-    #if defined(CONFIG_AMEBAGREEN2)
-    // See flush()'s CONFIG_AMEBAGREEN2 branch for why this can't just poll
-    // LSR TX_EMPTY. Track when the bytes just queued will have finished
-    // draining out of the FIFO: at most FIFO_SIZE chars can be in flight
-    // when write() returns (the wait loop above already blocked for any
-    // more), so that bounds the remaining drain time regardless of `size`.
-    // Extend from any still-pending previous write's deadline instead of
-    // from now, so back-to-back write()s without an intervening flush()
-    // don't underestimate.
-    if (size > 0) {
-        uint32_t chars = size < UART_TX_FIFO_SIZE ? size : UART_TX_FIFO_SIZE;
-        uint32_t drain_us = chars * 10 * 1000000UL / self->baudrate;
-        uint32_t now = mp_hal_ticks_us();
-        uint32_t base = ((int32_t)(self->tx_done_at_us - now) > 0) ? self->tx_done_at_us : now;
-        self->tx_done_at_us = base + drain_us;
-    }
-    #endif
-    #if MICROPY_PY_MACHINE_UART_IRQ
-    // Arm a one-shot TX-FIFO-empty interrupt so IRQ_TXIDLE fires once this
-    // write's bytes have actually left the FIFO (see machine_uart_irq_handler;
-    // the SDK auto-disables this interrupt again right before invoking us).
-    // Only bother if the user is actually listening for it.
-    if (size > 0 && (self->mp_irq_trigger & UART_IRQ_TXIDLE)) {
-        serial_irq_set(&self->serial, TxIrq, 1);
-    }
-    #endif
     return size;
 }
 
@@ -560,46 +640,30 @@ static mp_uint_t mp_machine_uart_ioctl(mp_obj_t self_in, mp_uint_t request, uint
             if ((flags & MP_STREAM_POLL_RD) && ringbuf_avail(&self->read_buffer) > 0) {
                 ret |= MP_STREAM_POLL_RD;
             }
-            if ((flags & MP_STREAM_POLL_WR) && serial_writable(&self->serial)) {
+            if ((flags & MP_STREAM_POLL_WR) && ringbuf_free(&self->write_buffer) > 0) {
                 ret |= MP_STREAM_POLL_WR;
             }
         }
     } else if (request == MP_STREAM_FLUSH) {
-        // write() only queues bytes into the 16-byte hardware TX FIFO; it
-        // does not wait for them to actually shift out the wire.
-        #if defined(CONFIG_AMEBAGREEN2)
-        // AmebaGreen2's LSR TX_EMPTY (RUART_BIT_TX_EMPTY) bit never latches
-        // when polled without RUART_BIT_ETBEI enabled in IER -- confirmed by
-        // instrumenting this loop: the raw LSR value read back was
-        // bit-for-bit identical from the first read through timeout at every
-        // baudrate tested (2400/9600/115200), even though the bytes are
-        // genuinely transmitted correctly in the meantime (verified via a
-        // TX/RX loopback readback while this bug was open). Enabling ETBEI
-        // to force the bit to update would also arm the real TX-empty
-        // interrupt (serial_api.c's uart_irqhandler), which has side effects
-        // this flush() call shouldn't trigger. So wait out write()'s
-        // computed drain deadline (self->tx_done_at_us) instead of polling a
-        // status bit that doesn't work in this context on this SoC.
-        int32_t remaining_us = (int32_t)(self->tx_done_at_us - mp_hal_ticks_us());
-        if (remaining_us > 0) {
-            mp_hal_delay_us((uint32_t)remaining_us);
-        }
-        ret = 0;
-        #else
-        // Poll the TX-empty flag (mirrors esp32's uart_wait_tx_done() /
-        // rp2's mp_machine_uart_txdone()) with a worst-case timeout sized
-        // for a full FIFO drain at the current baudrate, doubled for
-        // margin.
-        uint32_t timeout_us = (UART_TX_FIFO_SIZE + 1) * 10 * 1000000UL * 2 / self->baudrate;
+        // Wait for tx_busy to clear, i.e. for the TxIrq handler to confirm
+        // write_buffer *and* the HW FIFO have both drained -- this is driven
+        // by the real ETBEI interrupt (see uart_fill_tx_fifo()), not a bare
+        // LSR poll, so it doesn't hit AmebaGreen2's old TX_EMPTY-never-
+        // latches-when-polled-without-ETBEI issue (that bug was specific to
+        // reading the status bit without the interrupt enabled; still worth
+        // re-confirming on real Green2 hardware after this rewrite).
+        // Timeout sized for a full write_buffer + FIFO drain at the current
+        // baudrate, doubled for margin.
+        uint32_t timeout_us = ((uint32_t)self->txbuf_len + UART_TX_FIFO_SIZE + 1) * 10 * 1000000UL * 2 / self->baudrate;
         uint32_t start = mp_hal_ticks_us();
-        while (!(UART_LineStatusGet(machine_uart_regs(self)) & RUART_BIT_TX_EMPTY)) {
+        while (self->tx_busy) {
             if (mp_hal_ticks_us() - start > timeout_us) {
                 *errcode = MP_ETIMEDOUT;
                 return MP_STREAM_ERROR;
             }
+            mp_event_handle_nowait();
         }
         ret = 0;
-        #endif
     } else {
         *errcode = MP_EINVAL;
         ret = MP_STREAM_ERROR;
@@ -653,6 +717,7 @@ static mp_irq_obj_t *mp_machine_uart_irq(machine_uart_obj_t *self,
             self->mp_irq_obj = irq;
             self->mp_irq_trigger = (uint16_t)trigger;
         }
+        machine_uart_set_rx_fifo_level(self);
     }
 
     if (self->mp_irq_obj == NULL) {
@@ -668,6 +733,7 @@ static mp_irq_obj_t *mp_machine_uart_irq(machine_uart_obj_t *self,
 static mp_uint_t machine_uart_irq_trigger(mp_obj_t self_in, mp_uint_t new_trigger) {
     machine_uart_obj_t *self = MP_OBJ_TO_PTR(self_in);
     self->mp_irq_trigger = (uint16_t)new_trigger;
+    machine_uart_set_rx_fifo_level(self);
     return 0;
 }
 
