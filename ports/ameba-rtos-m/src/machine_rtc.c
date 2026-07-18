@@ -5,6 +5,7 @@
 // module via MICROPY_PY_MACHINE_EXTRA_GLOBALS in modmachine.c.
 
 #include <time.h>
+#include <sys/time.h>
 
 #include "py/runtime.h"
 #include "extmod/modmachine.h"
@@ -13,6 +14,17 @@
 
 #include "modmachine.h" // MP_MACHINE_WAKE_IDLE/SLEEP/DEEPSLEEP (defined in modmachine.c's translation unit; exported here)
 #include "rtc_api.h"
+
+// _settimeofday() (implemented in mphalport.c, this port's own -- neither
+// the toolchain's nosys stub nor any SDK component actually linked into
+// this build provides a working one) isn't declared in any toolchain header
+// (settimeofday() itself isn't part of this newlib's syscall table at all)
+// -- see its use in machine_rtc_datetime() below. _gettimeofday() *is*
+// declared in sys/time.h, but only under `#ifdef _COMPILING_NEWLIB`, so it
+// needs a declaration here too -- see mbedtls_ms_time() below for why this
+// port calls it directly instead of the public gettimeofday().
+int _settimeofday(struct timeval *ptimeval, void *ptimezone);
+int _gettimeofday(struct timeval *ptimeval, void *ptimezone);
 
 // Convert a target Unix timestamp into the hardware's alarm_t format.
 // alarm_t.yday is 0-based (Jan 1 = 0) -- confirmed via rtc_write()'s use of
@@ -119,6 +131,16 @@ static mp_obj_t machine_rtc_datetime(mp_uint_t n_args, const mp_obj_t *args) {
             mp_obj_get_int(items[6])  // second
         );
         rtc_write(t);
+        // Mirror this write into the libc wall clock (matches esp32's
+        // machine_rtc.c, modulo the underscore -- this SDK's newlib syscall
+        // stub is named _settimeofday(), not settimeofday(); see gettod.c)
+        // so mbedtls's MBEDTLS_HAVE_TIME_DATE certificate date checks --
+        // which read time()/gettimeofday(), not the RTC peripheral directly
+        // -- see a real time once this is set. Without this, setting
+        // machine.RTC() (including via ntptime.settime(), which calls this
+        // same setter) would have no effect on TLS.
+        struct timeval tv = {.tv_sec = t, .tv_usec = 0};
+        _settimeofday(&tv, NULL);
         return mp_const_none;
     }
 }
@@ -375,3 +397,23 @@ void machine_rtc_deinit_all(void) {
 }
 
 MP_REGISTER_ROOT_POINTER(struct _mp_irq_obj_t *machine_rtc_irq_object);
+
+// ---- mbedtls millisecond clock (see mbedtls_user_config.h) ----
+
+// mbedtls's own platform_util.c only provides a built-in mbedtls_ms_time()
+// for Linux/Windows hosts (clock_gettime()/GetSystemTimeAsFileTime()); on a
+// bare-metal target with MBEDTLS_HAVE_TIME defined it hits
+// `#error "No mbedtls_ms_time available"` unless MBEDTLS_PLATFORM_MS_TIME_ALT
+// is defined and something supplies this function -- mirrors rp2's
+// mbedtls_port.c. Reuses the same libc wall clock the datetime() setter
+// above feeds via _settimeofday(), so this and the TLS certificate-date
+// checks agree on what time it is. mbedtls_ms_time_t is int64_t by default
+// (mbedtls/platform_time.h) and this port doesn't override that macro.
+// Calls _gettimeofday() (the syscall), not gettimeofday() -- the public
+// symbol is shadowed by iperf3's own same-named, unrelated, purely-uptime
+// helper (see modtime.c).
+int64_t mbedtls_ms_time(void) {
+    struct timeval tv;
+    _gettimeofday(&tv, NULL);
+    return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}

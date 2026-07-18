@@ -25,6 +25,7 @@
  */
 
 #include <stdio.h>
+#include <sys/time.h>
 
 #include "ameba.h"
 #include "os_wrapper.h"
@@ -125,6 +126,55 @@ mp_uint_t mp_hal_ticks_cpu(void) {
 uint64_t mp_hal_time_ns(void) {
     return rtos_time_get_current_system_time_ns();
 }
+
+// ---------------------------------------------------------------------------
+// _gettimeofday()/_settimeofday() -- wall-clock syscalls
+// ---------------------------------------------------------------------------
+// AmebaGreen2's build links component/soc/amebagreen2/swlib/libnosys/
+// gettod.c (bundled straight into lib_swlib.a), which already provides a
+// real _gettimeofday()/_settimeofday() pair -- confirmed by a "multiple
+// definition" link error when this was first written unconditionally.
+// AmebaDplus's build does NOT link the equivalent
+// component/soc/amebadplus/swlib/libnosys/gettod.c (confirmed via the link
+// map: _gettimeofday resolves to the toolchain's own -specs nosys.specs
+// libnosys.a(gettod.o) stub instead, and nothing at all satisfies
+// _settimeofday), so this port must supply its own pair there.
+// time.time()/gettimeofday(), machine.RTC()'s datetime() setter, and
+// mbedtls_ms_time() (mbedtls_user_config.h's MBEDTLS_PLATFORM_MS_TIME_ALT --
+// see machine_rtc.c) all depend on one of these two being real.
+#if defined(CONFIG_AMEBADPLUS)
+// wall_clock_base_ms/_tick_ms are re-based on every call (read or write),
+// not just on _settimeofday(), so the mp_hal_ticks_ms() delta between
+// updates stays small -- ticks_ms() is a 32-bit ms counter that wraps every
+// ~49.7 days; re-basing on every access keeps that subtraction safely
+// within a single wrap regardless of how long it's been since the wall
+// clock was last queried or set.
+static uint64_t wall_clock_base_ms;
+static mp_uint_t wall_clock_base_tick_ms;
+
+static uint64_t wall_clock_now_ms(void) {
+    mp_uint_t elapsed_ms = mp_hal_ticks_ms() - wall_clock_base_tick_ms;
+    uint64_t now_ms = wall_clock_base_ms + elapsed_ms;
+    wall_clock_base_ms = now_ms;
+    wall_clock_base_tick_ms = mp_hal_ticks_ms();
+    return now_ms;
+}
+
+int _gettimeofday(struct timeval *tv, void *tz) {
+    (void)tz;
+    uint64_t now_ms = wall_clock_now_ms();
+    tv->tv_sec = now_ms / 1000;
+    tv->tv_usec = (now_ms % 1000) * 1000;
+    return 0;
+}
+
+int _settimeofday(struct timeval *tv, void *tz) {
+    (void)tz;
+    wall_clock_base_ms = (uint64_t)tv->tv_sec * 1000 + tv->tv_usec / 1000;
+    wall_clock_base_tick_ms = mp_hal_ticks_ms();
+    return 0;
+}
+#endif // CONFIG_AMEBADPLUS
 
 void mp_hal_delay_us(mp_uint_t us) {
     // these constants are tested for a 240MHz clock
