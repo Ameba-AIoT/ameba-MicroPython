@@ -62,21 +62,30 @@ static void amb_flash_print(const mp_print_t *print, mp_obj_t self_in, mp_print_
     mp_printf(print, "Flash(start=0x%08x, len=%u)", self->start, self->len);
 }
 
-/* Read block(s) --------------------------------------------*/ 
-mp_obj_t amb_flash_readblocks(size_t n_args, const mp_obj_t *args) {  
+/* Read block(s) --------------------------------------------*/
+mp_obj_t amb_flash_readblocks(size_t n_args, const mp_obj_t *args) {
     flash_obj_t *self = MP_OBJ_TO_PTR(args[0]);
-    uint32_t offset = mp_obj_get_int(args[1]) * self->block_size;
+    int64_t offset = (int64_t)mp_obj_get_int(args[1]) * self->block_size;
     mp_buffer_info_t bufinfo;
     int res = 0;
 
     mp_get_buffer_raise(args[2], &bufinfo, MP_BUFFER_WRITE);
- 
+
     if (n_args == 4) {
         offset += mp_obj_get_int(args[3]);
         //mp_raise_ValueError(MP_ERROR_TEXT("offset addressing not supported"));
     }
 
-    res = flash_stream_read(NULL, self->start + offset, bufinfo.len, (uint8_t *) bufinfo.buf);
+    // block_num (and the optional byte offset) come straight from the
+    // Python caller -- flash_stream_read() has no bounds checking of its
+    // own and will happily read from anywhere in the SoC's 32-bit address
+    // space, so an out-of-range value here previously turned into a hard
+    // Bus Fault / heap corruption instead of a clean OSError.
+    if (offset < 0 || (uint64_t)offset + bufinfo.len > self->len) {
+        mp_raise_OSError(MP_EIO);
+    }
+
+    res = flash_stream_read(NULL, self->start + (uint32_t)offset, bufinfo.len, (uint8_t *) bufinfo.buf);
     if (res != 1) {  /* SDK returns 1 on success, not 0 */
         mp_raise_OSError(MP_EIO);
     }
@@ -87,8 +96,8 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(amb_flash_readblocks_obj, 3, 4, amb_f
 /* Write block(s) --------------------------------------------*/
 mp_obj_t amb_flash_writeblocks(size_t n_args, const mp_obj_t *args) {
     flash_obj_t *self = MP_OBJ_TO_PTR(args[0]);
-    uint32_t block_num = mp_obj_get_int(args[1]);
-    uint32_t offset = block_num * self->block_size;
+    int64_t block_num = mp_obj_get_int(args[1]);
+    int64_t offset = block_num * self->block_size;
     mp_buffer_info_t bufinfo;
     int res = 0;
 
@@ -96,18 +105,29 @@ mp_obj_t amb_flash_writeblocks(size_t n_args, const mp_obj_t *args) {
 
     if (n_args == 4) {
         offset += mp_obj_get_int(args[3]);
-    } else {
-        if (bufinfo.len % self->block_size != 0) {
-            mp_raise_ValueError(MP_ERROR_TEXT("write length must be a multiple of block size"));
-        }
+    } else if (bufinfo.len % self->block_size != 0) {
+        mp_raise_ValueError(MP_ERROR_TEXT("write length must be a multiple of block size"));
+    }
+
+    // block_num (and the optional byte offset) come straight from the
+    // Python caller -- flash_erase_sector()/flash_stream_write() have no
+    // bounds checking of their own, so an out-of-range value here
+    // previously turned into a real erase/write at an unintended flash
+    // address (or a hard Bus Fault / heap corruption) instead of a clean
+    // OSError.
+    if (offset < 0 || (uint64_t)offset + bufinfo.len > self->len) {
+        mp_raise_OSError(MP_EIO);
+    }
+
+    if (n_args != 4) {
         int count = bufinfo.len / self->block_size;
-        for(int i = 0; i < count; i++) {
-            uint32_t erase_addr = self->start  + (block_num + i) * SECTOR_SIZE_FLASH;
+        for (int i = 0; i < count; i++) {
+            uint32_t erase_addr = self->start + (uint32_t)(block_num + i) * SECTOR_SIZE_FLASH;
             flash_erase_sector(NULL, erase_addr);
         }
     }
 
-    res = flash_stream_write(NULL, self->start + offset, bufinfo.len, (uint8_t *) bufinfo.buf);
+    res = flash_stream_write(NULL, self->start + (uint32_t)offset, bufinfo.len, (uint8_t *) bufinfo.buf);
     if (res != 1) {  /* SDK returns 1 on success, not 0 */
         mp_raise_OSError(MP_EIO);
     }
@@ -140,8 +160,14 @@ static mp_obj_t amb_flash_ioctl (mp_obj_t self_in, mp_obj_t cmd_in, mp_obj_t arg
             return MP_OBJ_NEW_SMALL_INT(self->block_size);
         }
         case MP_BLOCKDEV_IOCTL_BLOCK_ERASE: {
-            uint32_t block_num = mp_obj_get_int(arg_in);
-            uint32_t erase_addr = self->start + block_num * SECTOR_SIZE_FLASH;
+            int64_t block_num = mp_obj_get_int(arg_in);
+            // Same out-of-range guard as amb_flash_writeblocks() -- see its
+            // comment for why this matters (real erase at an unintended
+            // flash address / hard crash instead of a clean OSError).
+            if (block_num < 0 || (uint64_t)(block_num + 1) * SECTOR_SIZE_FLASH > self->len) {
+                mp_raise_OSError(MP_EIO);
+            }
+            uint32_t erase_addr = self->start + (uint32_t)block_num * SECTOR_SIZE_FLASH;
             /* erase_addr is relative offset from SPI_FLASH_BASE, same convention as flash_stream_read/write */
             flash_erase_sector(NULL, erase_addr);
             return MP_OBJ_NEW_SMALL_INT(0);
