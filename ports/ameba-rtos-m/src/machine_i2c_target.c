@@ -40,6 +40,41 @@ static const PinName i2c_target_default_sda[MICROPY_PY_MACHINE_I2C_TARGET_MAX] =
     MICROPY_HW_I2C0_SDA, MICROPY_HW_I2C1_SDA,
 };
 
+// ---- Pin parse: int PinName, or string "PAx"/"PA_x"/"PBx"/"PB_x" --
+// (same helper as machine_spi.c's machine_spi_get_pin() / machine_i2c.c's
+// machine_i2c_get_pin() -- each pin-accepting constructor in this port
+// keeps its own static copy rather than sharing one across files).
+static PinName machine_i2c_target_get_pin(mp_obj_t obj) {
+    if (mp_obj_is_int(obj)) {
+        return (PinName)mp_obj_get_int(obj);
+    }
+    if (mp_obj_is_str(obj)) {
+        size_t len;
+        const char *s = mp_obj_str_get_data(obj, &len);
+        if (len >= 3 && s[0] == 'P' && (s[1] == 'A' || s[1] == 'B')) {
+            size_t i = 2;
+            if (s[i] == '_') {
+                i++;
+            }
+            int num = 0;
+            bool has_digit = false;
+            for (; i < len; i++) {
+                if (s[i] < '0' || s[i] > '9') {
+                    has_digit = false;
+                    break;
+                }
+                num = num * 10 + (s[i] - '0');
+                has_digit = true;
+            }
+            if (has_digit && num >= 0 && num <= 31) {
+                int base = (s[1] == 'B') ? (int)PB_0 : (int)PA_0;
+                return (PinName)(base + num);
+            }
+        }
+    }
+    mp_raise_ValueError(MP_ERROR_TEXT("invalid I2C pin"));
+}
+
 // ---------------------------------------------------------------------------
 // Port object struct
 // ---------------------------------------------------------------------------
@@ -330,10 +365,10 @@ static mp_obj_t mp_machine_i2c_target_make_new(const mp_obj_type_t *type,
 
     // Resolve SCL/SDA — fall back to board defaults if not given.
     PinName scl = (args[ARG_scl].u_obj != mp_const_none)
-        ? (PinName)mp_obj_get_int(args[ARG_scl].u_obj)
+        ? machine_i2c_target_get_pin(args[ARG_scl].u_obj)
         : i2c_target_default_scl[i2c_id];
     PinName sda = (args[ARG_sda].u_obj != mp_const_none)
-        ? (PinName)mp_obj_get_int(args[ARG_sda].u_obj)
+        ? machine_i2c_target_get_pin(args[ARG_sda].u_obj)
         : i2c_target_default_sda[i2c_id];
     self->scl = scl;
     self->sda = sda;
