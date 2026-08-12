@@ -68,6 +68,14 @@ void mp_main(void * para) {
     rtk_loguart_init();
     extern void mp_hal_dwt_init(void);
     mp_hal_dwt_init();   // enable DWT cycle counter for machine.bitstream
+    #if MICROPY_PY_MACHINE_USBSERIAL
+    // Brings up the USB core + CDC-ACM class driver once, at cold boot only
+    // (like rtk_loguart_init() above) -- not inside soft_reset, so a soft
+    // reset doesn't re-enumerate the USB device or interrupt an
+    // in-progress transfer.
+    extern void machine_usbserial_init0(void);
+    machine_usbserial_init0();
+    #endif
 soft_reset:
     mp_cstack_init_with_top((void *)sp, MICROPY_TASK_STACK_SIZE);
     gc_init(heap, heap + MICROPY_GC_INITIAL_HEAP_SIZE);

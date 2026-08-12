@@ -37,6 +37,7 @@
 #include "machine_pin.h"
 #include "machine_timer.h"
 #include "machine_sdcard.h"
+#include "machine_usbserial.h"
 #include "modmachine.h"
 
 // Reset cause values, aligned with esp32 for cross-port compatibility.
@@ -71,6 +72,13 @@ typedef enum {
 #define MICROPY_PY_MACHINE_SDCARD_GLOBAL_ENTRY
 #endif
 
+#if MICROPY_PY_MACHINE_USBSERIAL
+#define MICROPY_PY_MACHINE_USBSERIAL_GLOBAL_ENTRY \
+    { MP_ROM_QSTR(MP_QSTR_USBSerial), MP_ROM_PTR(&machine_usbserial_type) },
+#else
+#define MICROPY_PY_MACHINE_USBSERIAL_GLOBAL_ENTRY
+#endif
+
 #define MICROPY_PY_MACHINE_EXTRA_GLOBALS \
     { MP_ROM_QSTR(MP_QSTR_Pin),             MP_ROM_PTR(&machine_pin_type) }, \
     { MP_ROM_QSTR(MP_QSTR_Timer),           MP_ROM_PTR(&machine_timer_type) }, \
@@ -86,7 +94,8 @@ typedef enum {
     { MP_ROM_QSTR(MP_QSTR_IDLE),            MP_ROM_INT(MP_MACHINE_WAKE_IDLE) }, \
     { MP_ROM_QSTR(MP_QSTR_SLEEP),           MP_ROM_INT(MP_MACHINE_WAKE_SLEEP) }, \
     { MP_ROM_QSTR(MP_QSTR_DEEPSLEEP),       MP_ROM_INT(MP_MACHINE_WAKE_DEEPSLEEP) }, \
-    MICROPY_PY_MACHINE_SDCARD_GLOBAL_ENTRY
+    MICROPY_PY_MACHINE_SDCARD_GLOBAL_ENTRY \
+    MICROPY_PY_MACHINE_USBSERIAL_GLOBAL_ENTRY
 
 static mp_obj_t mp_machine_unique_id(void) {
     // EFUSE_GetUUID returns a 4-byte chip UUID via sys_api.h -> ... -> ameba_chipinfo.h.
