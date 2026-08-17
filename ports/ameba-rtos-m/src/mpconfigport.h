@@ -177,6 +177,22 @@
 #define MICROPY_PY_MACHINE_SDCARD (0)
 #endif
 
+// machine.USBSerial -- AmebaGreen2 (RTL8711F)'s USB-A socket wires straight
+// to the chip's native USB device controller and supports device mode (User
+// Guide 4.8); AmebaDplus's only physical USB connector is the LOGUART
+// USB-UART bridge, with no separate USB device socket on the board (user
+// confirmed on real hardware), so the class doesn't exist there
+// (compile-time gate, matching this port's convention for board-exclusive
+// peripherals). Also needs CONFIG_USBD_CDC_ACM (board opt-in via prj.conf,
+// which Kconfig-selects the vendor CDC-ACM class driver) -- an AmebaGreen2
+// board without that opt-in must not get this gate (same reasoning as
+// network.LAN's CONFIG_ETHERNET condition below).
+#if defined(CONFIG_AMEBAGREEN2) && defined(CONFIG_USBD_CDC_ACM)
+#define MICROPY_PY_MACHINE_USBSERIAL (1)
+#else
+#define MICROPY_PY_MACHINE_USBSERIAL (0)
+#endif
+
 // network.LAN -- AmebaGreen2 (RTL8711F) has an RMII MAC + on-board RTL8201F
 // PHY; AmebaDplus has no RMII hardware at all, so the class doesn't exist
 // there (compile-time gate, matching this port's convention). network_lan.c's

@@ -35,6 +35,9 @@
 #include "py/runtime.h"
 #include "py/stream.h"
 #include "extmod/misc.h"
+#if MICROPY_PY_MACHINE_USBSERIAL
+#include "machine_usbserial.h"
+#endif
 
 static uint8_t uart_ringbuf_array[256];
 // SPSC: log_uart_irq (ISR) is the sole producer; mp_hal_stdin_rx_chr (task) is the sole consumer.
@@ -47,6 +50,9 @@ uintptr_t mp_hal_stdio_poll(uintptr_t poll_flags) {
     uintptr_t ret = 0;
     #if MICROPY_PY_OS_DUPTERM
     ret |= mp_os_dupterm_poll(poll_flags);
+    #endif
+    #if MICROPY_PY_MACHINE_USBSERIAL
+    ret |= mp_usbserial_poll(poll_flags);
     #endif
     // Check ringbuffer directly for uart and usj.
     if ((poll_flags & MP_STREAM_POLL_RD) && ringbuf_peek(&stdin_ringbuf) != -1) {
@@ -71,6 +77,12 @@ int mp_hal_stdin_rx_chr(void) {
             return dupterm_c;
         }
         #endif
+        #if MICROPY_PY_MACHINE_USBSERIAL
+        int usbserial_c = mp_usbserial_rx_chr();
+        if (usbserial_c >= 0) {
+            return usbserial_c;
+        }
+        #endif
         MICROPY_EVENT_POLL_HOOK
     }
 }
@@ -82,6 +94,12 @@ mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len)
     // Mirror REPL output to any dupterm streams (WebREPL, second console, ...).
     // Called before the LOGUART loop, which consumes str/len.
     mp_os_dupterm_tx_strn(str, len);
+    #endif
+    #if MICROPY_PY_MACHINE_USBSERIAL
+    // Mirror to the USB CDC-ACM console too -- parallel to dupterm above,
+    // not routed through it, so MICROPY_PY_OS_DUPTERM stays at 1 and
+    // WebREPL keeps its existing slot (see spec's REPL integration section).
+    mp_usbserial_tx_strn(str, len);
     #endif
 	mp_uint_t nChars = 0;
     //DiagPrintfNano("%s %x\r\n", __FUNCTION__, __builtin_return_address(0));

@@ -114,6 +114,7 @@ set(MICROPY_SOURCE_QSTR
     ${MICROPY_PORT_DIR}/src/machine_can.c
     ${MICROPY_PORT_DIR}/src/network_lan.c
     ${MICROPY_PORT_DIR}/src/machine_sdcard.c
+    ${MICROPY_PORT_DIR}/src/machine_usbserial.c
     ${MICROPY_PORT_DIR}/src/machine_wdt.c
     ${MICROPY_PORT_DIR}/src/machine_i2s.c
 )
@@ -173,6 +174,7 @@ ameba_list_append(private_sources
     network_wlan.c
     network_lan.c
     machine_sdcard.c
+    machine_usbserial.c
     network_common.c
     machine_pin.c
     machine_timer.c
@@ -202,6 +204,9 @@ ameba_list_append(private_includes
     ${c_CMPT_WIFI_DIR}/api
     ${c_CMPT_LWIP_DIR}/api
     ${c_CMPT_NETWORK_DIR}/dhcp
+    ${c_CMPT_USB_DIR}/common
+    ${c_CMPT_USB_DIR}/device/core
+    ${c_CMPT_USB_DIR}/device/cdc_acm
 )
 
 ameba_list_append(private_definitions
