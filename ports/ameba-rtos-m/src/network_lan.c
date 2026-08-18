@@ -33,6 +33,48 @@ network_lan_obj_t network_lan_obj = {
  * FreeRTOS tasks/semaphores on top of the still-running first one. */
 static bool network_lan_eth_init_done = false;
 
+/* Set once lwip_request_ip() reports a real lease -- isconnected() reflects
+ * this (not just physical link state), matching this port's own
+ * wlan_isconnected() convention (STA: association + address, not just radio
+ * state) and mimxrt/esp32's LAN isconnected(). */
+static bool network_lan_has_ip = false;
+
+/* ---------- link-up/down callback (drives DHCP) --------------------------- */
+
+/* Ameba's lwIP integration has no auto-DHCP-on-link-up like ESP-IDF's
+ * esp_netif does -- the vendor's own example_ethernet_basic.c shows the
+ * expected pattern: an app-registered eth_register_link_cb() callback calls
+ * lwip_request_ip() by hand when the PHY reports link up. Mirror that here,
+ * gated on the interface actually being active() so a cable being plugged
+ * in before active(True) doesn't silently start DHCP behind the user's back.
+ */
+/* Request a DHCP lease and, on success, make this the default route --
+ * matches example_ethernet_basic.c's netifapi_netif_set_default() call.
+ * Without it lwIP has no route for any address outside the local subnet
+ * (observed on hardware as connect() failing with EHOSTUNREACH even with a
+ * valid lease/gateway from ifconfig()). */
+static void network_lan_do_dhcp(void) {
+    network_lan_has_ip = (lwip_request_ip(NETIF_ETH_INDEX) == DHCP_ADDRESS_ASSIGNED);
+    if (network_lan_has_ip) {
+        netifapi_netif_set_default(pnetif_eth);
+    }
+}
+
+static void network_lan_link_callback(int link_up) {
+    if (link_up) {
+        if (netif_is_up(pnetif_eth)) {
+            netifapi_netif_set_link_up(pnetif_eth);
+            network_lan_do_dhcp();
+        }
+    } else {
+        network_lan_has_ip = false;
+        if (netif_is_up(pnetif_eth)) {
+            netifapi_netif_set_link_down(pnetif_eth);
+            lwip_clear_ip(NETIF_ETH_INDEX);
+        }
+    }
+}
+
 /* ---------- make_new ----------------------------------------------------- */
 
 static mp_obj_t network_lan_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
@@ -76,6 +118,10 @@ static mp_obj_t network_lan_make_new(const mp_obj_type_t *type, size_t n_args, s
      * second call would stack duplicate FreeRTOS tasks/semaphores on top
      * of the still-running first one. */
     if (!network_lan_eth_init_done) {
+        /* Must be registered before eth_init() -- matches
+         * example_ethernet_basic.c's ordering, since the ETH_LINK monitor
+         * task eth_init() starts can fire the callback almost immediately. */
+        eth_register_link_cb(network_lan_link_callback);
         eth_init();
         network_lan_eth_init_done = true;
     }
@@ -91,7 +137,17 @@ static mp_obj_t network_lan_active(size_t n_args, const mp_obj_t *args) {
     }
     if (mp_obj_is_true(args[1])) {
         lwip_netif_set_up(NETIF_ETH_INDEX);
+        /* Catch the case where the cable was already plugged in (and the
+         * PHY link-monitor task already reported link up) before this call
+         * -- the link callback only fires on a down->up transition, so it
+         * would otherwise never run for an already-up link. */
+        if (eth_link_is_up) {
+            netifapi_netif_set_link_up(pnetif_eth);
+            network_lan_do_dhcp();
+        }
     } else {
+        network_lan_has_ip = false;
+        lwip_clear_ip(NETIF_ETH_INDEX);
         lwip_netif_set_down(NETIF_ETH_INDEX);
     }
     return mp_const_none;
@@ -102,7 +158,7 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(network_lan_active_obj, 1, 2, network
 
 static mp_obj_t network_lan_isconnected(mp_obj_t self_in) {
     (void)self_in;
-    return mp_obj_new_bool(eth_link_is_up);
+    return mp_obj_new_bool(eth_link_is_up && network_lan_has_ip);
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(network_lan_isconnected_obj, network_lan_isconnected);
 
